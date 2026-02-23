@@ -60,7 +60,7 @@
 //	import (
 //		"database/sql"
 //
-//		_ "modernc.org/sqlite"
+//		_ "github.com/wow-look-at-my/go-sqlite"
 //	)
 //
 //	...
@@ -105,7 +105,7 @@
 //	=== RUN   TestScalar
 //	--- PASS: TestScalar (0.09s)
 //	PASS
-//	ok  modernc.org/sqlite 0.128s
+//	ok  github.com/wow-look-at-my/go-sqlite 0.128s
 //	-rw-r--r-- 1 jnml jnml 76 Apr  6 11:22 /tmp/libc.log
 //	0:jnml@e5-1650:~/src/modernc.org/sqlite$ cat /tmp/libc.log
 //	[10723 sqlite.test] 2023-04-06 11:22:48.288066057 +0200 CEST m=+0.000707150
@@ -175,7 +175,7 @@
 //	=== RUN   TestScalar
 //	--- PASS: TestScalar (0.26s)
 //	PASS
-//	ok   modernc.org/sqlite 0.285s
+//	ok   github.com/wow-look-at-my/go-sqlite 0.285s
 //	-rw-r--r-- 1 jnml jnml 918 Apr  6 11:29 /tmp/libc.log
 //	0:jnml@e5-1650:~/src/modernc.org/sqlite$ cat /tmp/libc.log
 //	[11910 sqlite.test] 2023-04-06 11:29:13.143589542 +0200 CEST m=+0.000689270
@@ -200,4 +200,4 @@
 // See https://sqlite.org/docs.html
 //
 // [The SQLite Drivers Benchmarks Game]: https://pkg.go.dev/modernc.org/sqlite-bench#readme-tl-dr-scorecard
-package sqlite // import "modernc.org/sqlite"
+package sqlite // import "github.com/wow-look-at-my/go-sqlite"

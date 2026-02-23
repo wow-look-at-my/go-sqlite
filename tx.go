@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package sqlite // import "modernc.org/sqlite"
+package sqlite // import "github.com/wow-look-at-my/go-sqlite"
 
 import (
 	"context"
 	"database/sql/driver"
 
 	"modernc.org/libc"
-	sqlite3 "modernc.org/sqlite/lib"
+	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 type tx struct {

@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package sqlite // import "modernc.org/sqlite"
+package sqlite // import "github.com/wow-look-at-my/go-sqlite"
 
 import (
 	"database/sql/driver"
 	"fmt"
 
-	"modernc.org/sqlite/vtab"
+	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
 // Driver implements database/sql/driver.Driver.

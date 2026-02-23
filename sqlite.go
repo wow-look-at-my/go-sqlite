@@ -4,7 +4,7 @@
 
 //go:generate go run generator.go -full-path-comments
 
-package sqlite // import "modernc.org/sqlite"
+package sqlite // import "github.com/wow-look-at-my/go-sqlite"
 
 import (
 	"context"
@@ -25,7 +25,7 @@ import (
 
 	"modernc.org/libc"
 	"modernc.org/libc/sys/types"
-	sqlite3 "modernc.org/sqlite/lib"
+	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 var (
