@@ -16,6 +16,8 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -215,6 +217,80 @@ func init() {
 			return nil, nil
 		},
 	})
+
+	// Used by BenchmarkUDFArgsAllocation. Returns nil without inspecting args so
+	// that the cost measured is dominated by argument marshalling in
+	// functionArgs, not by user code.
+	MustRegisterDeterministicScalarFunction(
+		"issue226_noop",
+		3,
+		func(ctx *FunctionContext, args []driver.Value) (driver.Value, error) {
+			return nil, nil
+		},
+	)
+
+	// Volatile counterpart to issue226_noop, registered with VolatileArgs=true.
+	// Paired with BenchmarkUDFArgsAllocationVolatile to quantify the additional
+	// saving from skipping the per-call TEXT / BLOB copy.
+	MustRegisterFunction("issue226_noop_volatile", &FunctionImpl{
+		NArgs:         3,
+		Deterministic: true,
+		VolatileArgs:  true,
+		Scalar: func(ctx *FunctionContext, args []driver.Value) (driver.Value, error) {
+			return nil, nil
+		},
+	})
+}
+
+// BenchmarkUDFArgsAllocation measures allocations in functionArgs when a
+// user-defined scalar function is invoked many times within a single query.
+// Regression target for https://gitlab.com/cznic/sqlite/-/issues/226 — the
+// hot path is the per-call allocation of the []driver.Value args slice in
+// functionArgs and the auxiliary copies of TEXT/BLOB values.
+func BenchmarkUDFArgsAllocation(b *testing.B) {
+	db, err := sql.Open(driverName, "file::memory:")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`); err != nil {
+		b.Fatal(err)
+	}
+
+	const rows = 1000
+	tx, err := db.Begin()
+	if err != nil {
+		b.Fatal(err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO t (a, b, c) VALUES (?, ?, ?)`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < rows; i++ {
+		if _, err := stmt.Exec(int64(i), "hello", []byte{1, 2, 3}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r, err := db.Query(`SELECT issue226_noop(a, b, c) FROM t`)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for r.Next() {
+		}
+		if err := r.Err(); err != nil {
+			b.Fatal(err)
+		}
+		r.Close()
+	}
 }
 
 func TestRegisteredFunctions(t *testing.T) {
@@ -672,6 +748,37 @@ func TestRegisteredFunctions(t *testing.T) {
 		})
 	})
 
+	t.Run("serialize and deserialize allocator", func(tt *testing.T) {
+		// Deserialize passes the buffer to sqlite3_deserialize with FREEONCLOSE|RESIZEABLE,
+		// so the buffer must come from sqlite3_malloc.
+		// If it comes from the wrong allocator, sqlite3_free or sqlite3_realloc on the buffer crashes.
+		db, err := sql.Open("sqlite", "file::memory:")
+		if err != nil {
+			tt.Fatal(err)
+		}
+		defer db.Close()
+
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			tt.Fatal(err)
+		}
+		err = conn.Raw(func(dc any) error {
+			s := dc.(interface {
+				Serialize() ([]byte, error)
+				Deserialize([]byte) error
+			})
+			buf, err := s.Serialize()
+			if err != nil {
+				return err
+			}
+			return s.Deserialize(buf)
+		})
+		if err != nil {
+			tt.Fatal(err)
+		}
+		conn.Close()
+	})
+
 	t.Run("backup and restore", func(tt *testing.T) {
 		type backuper interface {
 			NewBackup(string) (*Backup, error)
@@ -847,6 +954,124 @@ func TestRegisteredFunctions(t *testing.T) {
 		}
 	})
 
+	t.Run("restore init failure reads error from dest handle", func(tt *testing.T) {
+		// sqlite3_backup_init stores errors on the *destination* handle.
+		// In restore mode the destination is c.db, so the error must be
+		// read from c.db rather than remoteConn.db.
+		//
+		// We trigger a backup_init failure by starting a read transaction
+		// on the destination before calling NewRestore. backup_init checks
+		// for this and fails with SQLITE_ERROR on the destination handle.
+
+		// Create a source database file with some data.
+		tmpFile := filepath.Join(tt.TempDir(), "src.db")
+		src, err := newConn(tmpFile)
+		if err != nil {
+			tt.Fatal(err)
+		}
+		if _, err := src.exec(context.Background(), "CREATE TABLE t(x)", nil); err != nil {
+			tt.Fatal(err)
+		}
+		src.Close()
+
+		// Create the destination connection (the one we'll restore into).
+		dest, err := newConn(":memory:")
+		if err != nil {
+			tt.Fatal(err)
+		}
+		defer dest.Close()
+
+		// Put a read transaction on dest so backup_init will refuse it.
+		if _, err := dest.exec(context.Background(), "CREATE TABLE dummy(x)", nil); err != nil {
+			tt.Fatal(err)
+		}
+		if _, err := dest.exec(context.Background(), "BEGIN", nil); err != nil {
+			tt.Fatal(err)
+		}
+		if _, err := dest.exec(context.Background(), "SELECT * FROM dummy", nil); err != nil {
+			tt.Fatal(err)
+		}
+
+		// Attempt restore. backup_init should fail.
+		_, err = dest.NewRestore(tmpFile)
+		if err == nil {
+			tt.Fatal("expected restore to fail due to read transaction on destination")
+		}
+
+		var sqliteErr *Error
+		if !errors.As(err, &sqliteErr) {
+			tt.Fatalf("expected *Error, got %T: %v", err, err)
+		}
+
+		// The error must come from the destination handle (c.db). If it
+		// were read from remoteConn.db it would be 0 (SQLITE_OK, "not an
+		// error").
+		if sqliteErr.Code() != 1 {
+			tt.Fatalf("expected SQLITE_ERROR (1), got %d: %v", sqliteErr.Code(), err)
+		}
+	})
+
+	t.Run("backup init failure reads error from dest handle", func(tt *testing.T) {
+		// sqlite3_backup_init stores errors on the *destination* handle.
+		// In backup mode the destination is remoteConn.db, so the error
+		// must be read from remoteConn.db rather than c.db.
+		//
+		// We trigger a backup_init failure by starting a read transaction
+		// on the destination before invoking c.backup. We call the
+		// unexported c.backup directly because NewBackup creates the
+		// destination connection internally.
+
+		src, err := newConn(":memory:")
+		if err != nil {
+			tt.Fatal(err)
+		}
+		defer src.Close()
+		if _, err := src.exec(context.Background(), "CREATE TABLE t(x)", nil); err != nil {
+			tt.Fatal(err)
+		}
+
+		dest, err := newConn(filepath.Join(tt.TempDir(), "dst.db"))
+		if err != nil {
+			tt.Fatal(err)
+		}
+		defer dest.Close()
+
+		// Put a read transaction on dest so backup_init will refuse it.
+		if _, err := dest.exec(context.Background(), "CREATE TABLE dummy(x)", nil); err != nil {
+			tt.Fatal(err)
+		}
+		if _, err := dest.exec(context.Background(), "BEGIN", nil); err != nil {
+			tt.Fatal(err)
+		}
+		if _, err := dest.exec(context.Background(), "SELECT * FROM dummy", nil); err != nil {
+			tt.Fatal(err)
+		}
+
+		// Attempt backup. backup_init should fail.
+		_, err = src.backup(dest, false)
+		if err == nil {
+			tt.Fatal("expected backup to fail due to read transaction on destination")
+		}
+
+		var sqliteErr *Error
+		if !errors.As(err, &sqliteErr) {
+			tt.Fatalf("expected *Error, got %T: %v", err, err)
+		}
+
+		// The error code is correct in both buggy and fixed versions in
+		// backup mode (the old code already read errcode from the right
+		// handle), but the errmsg side was wrong. To pin the message fix,
+		// require a substring from the destination's actual sqlite errmsg
+		// ("destination database is in use"). Reading errmsg from c.db
+		// (the source) would yield "not an error" instead.
+		if sqliteErr.Code() != 1 {
+			tt.Fatalf("expected SQLITE_ERROR (1), got %d: %v", sqliteErr.Code(), err)
+		}
+		if !strings.Contains(err.Error(), "destination") {
+			tt.Fatalf("expected error message read from destination handle, got: %v", err)
+		}
+	})
+
 	t.Run("QueryContext with context expired", func(tt *testing.T) {
 		withDB(func(db *sql.DB) {
 			if _, err := db.Exec("create table t(b text); insert into t values (?), (?)", "text1", "text2"); err != nil {
@@ -1001,4 +1226,174 @@ func TestRegisteredFunctions(t *testing.T) {
 			}
 		})
 	})
+}
+
+// BenchmarkUDFArgsAllocationVolatile mirrors BenchmarkUDFArgsAllocation but
+// invokes a UDF registered with VolatileArgs=true. The difference between the
+// two benchmarks isolates the per-call cost of copying TEXT / BLOB argument
+// bodies into Go-owned memory, which is what VolatileArgs eliminates.
+func BenchmarkUDFArgsAllocationVolatile(b *testing.B) {
+	db, err := sql.Open(driverName, "file::memory:")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`); err != nil {
+		b.Fatal(err)
+	}
+
+	const rows = 1000
+	tx, err := db.Begin()
+	if err != nil {
+		b.Fatal(err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO t (a, b, c) VALUES (?, ?, ?)`)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < rows; i++ {
+		if _, err := stmt.Exec(int64(i), "hello", []byte{1, 2, 3}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r, err := db.Query(`SELECT issue226_noop_volatile(a, b, c) FROM t`)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for r.Next() {
+		}
+		if err := r.Err(); err != nil {
+			b.Fatal(err)
+		}
+		r.Close()
+	}
+}
+
+// TestVolatileArgsScalar verifies that a scalar UDF registered with
+// VolatileArgs=true still receives correct TEXT and BLOB argument values
+// (including the empty cases that take a short-circuit path in functionArgs).
+// The UDF copies each value before the call returns, which is the required
+// usage pattern for VolatileArgs callbacks.
+func TestVolatileArgsScalar(t *testing.T) {
+	var (
+		gotStrings []string
+		gotBlobs   [][]byte
+		mu         sync.Mutex
+	)
+
+	MustRegisterFunction("vol_recorder_scalar", &FunctionImpl{
+		NArgs:         2,
+		Deterministic: true,
+		VolatileArgs:  true,
+		Scalar: func(ctx *FunctionContext, args []driver.Value) (driver.Value, error) {
+			s := args[0].(string)
+			b := args[1].([]byte)
+			mu.Lock()
+			gotStrings = append(gotStrings, strings.Clone(s))
+			gotBlobs = append(gotBlobs, append([]byte(nil), b...))
+			mu.Unlock()
+			return nil, nil
+		},
+	})
+
+	db, err := sql.Open(driverName, "file::memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (s, b) VALUES ('alpha', X'01020304'), ('beta', X'AABB'), ('', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.Query(`SELECT vol_recorder_scalar(s, COALESCE(b, X'')) FROM t ORDER BY rowid`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+
+	wantStrings := []string{"alpha", "beta", ""}
+	if !reflect.DeepEqual(gotStrings, wantStrings) {
+		t.Errorf("volatile scalar TEXT: got %q, want %q", gotStrings, wantStrings)
+	}
+	wantBlobs := [][]byte{{1, 2, 3, 4}, {0xAA, 0xBB}, nil}
+	if !reflect.DeepEqual(gotBlobs, wantBlobs) {
+		t.Errorf("volatile scalar BLOB: got %v, want %v", gotBlobs, wantBlobs)
+	}
+}
+
+// volatileAggregate is an aggregate function used by TestVolatileArgsAggregate.
+// Each Step copies its argument into the aggregate's own buffer; the volatile
+// contract requires this.
+type volatileAggregate struct {
+	strs  []string
+	blobs [][]byte
+}
+
+func (a *volatileAggregate) Step(ctx *FunctionContext, args []driver.Value) error {
+	a.strs = append(a.strs, strings.Clone(args[0].(string)))
+	a.blobs = append(a.blobs, append([]byte(nil), args[1].([]byte)...))
+	return nil
+}
+
+func (a *volatileAggregate) WindowInverse(ctx *FunctionContext, args []driver.Value) error {
+	return nil
+}
+
+func (a *volatileAggregate) WindowValue(ctx *FunctionContext) (driver.Value, error) {
+	return fmt.Sprintf("strs=%q blobs=%v", a.strs, a.blobs), nil
+}
+
+func (a *volatileAggregate) Final(ctx *FunctionContext) {}
+
+// TestVolatileArgsAggregate verifies that the volatile-args path is honored
+// by the Step trampoline for aggregate functions. The aggregate sees every
+// row's TEXT and BLOB and the assembled result must match the inserted data.
+func TestVolatileArgsAggregate(t *testing.T) {
+	MustRegisterFunction("vol_recorder_agg", &FunctionImpl{
+		NArgs:        2,
+		VolatileArgs: true,
+		MakeAggregate: func(ctx FunctionContext) (AggregateFunction, error) {
+			return &volatileAggregate{}, nil
+		},
+	})
+
+	db, err := sql.Open(driverName, "file::memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (s, b) VALUES ('one', X'01'), ('two', X'02'), ('three', X'03')`); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := db.QueryRow(`SELECT vol_recorder_agg(s, b) FROM (SELECT s, b FROM t ORDER BY rowid)`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	want := `strs=["one" "two" "three"] blobs=[[1] [2] [3]]`
+	if got != want {
+		t.Errorf("volatile aggregate result:\n got %s\nwant %s", got, want)
+	}
 }

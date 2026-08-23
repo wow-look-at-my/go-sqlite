@@ -14,6 +14,75 @@ import (
 	"testing"
 )
 
+func TestFcntlDataVersion(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "tmp.db")
+	db, err := sql.Open(driverName, fmt.Sprintf("file:%s", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	conn, err := db.Conn(context.TODO())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(context.TODO(), "create table t(v int)"); err != nil {
+		t.Fatal(err)
+	}
+
+	getVersion := func() uint32 {
+		t.Helper()
+		var v uint32
+		err = conn.Raw(func(driverConn any) error {
+			fc, ok := driverConn.(FileControl)
+			if !ok {
+				return fmt.Errorf("driver connection didn't implement FileControl")
+			}
+			got, err := fc.FileControlDataVersion("main")
+			v = got
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	v0 := getVersion()
+
+	// A commit on this connection advances the version observed here.
+	if _, err := conn.ExecContext(context.TODO(), "insert into t(v) values (1)"); err != nil {
+		t.Fatal(err)
+	}
+	v1 := getVersion()
+	if v1 == v0 {
+		t.Errorf("data version did not change after a local write: still %d", v0)
+	}
+
+	// A commit on a different connection must also advance the version.
+	other, err := db.Conn(context.TODO())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ExecContext(context.TODO(), "insert into t(v) values (2)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Force the original connection's pager to observe the change.
+	if _, err := conn.ExecContext(context.TODO(), "select count(*) from t"); err != nil {
+		t.Fatal(err)
+	}
+
+	if v := getVersion(); v == v1 {
+		t.Errorf("data version did not change after a write from another connection: still %d", v)
+	}
+}
+
 func TestFcntlPersistWAL(t *testing.T) {
 	t.Run("WAL is cleaned up without persist WAL", func(t *testing.T) {
 		name := filepath.Join(t.TempDir(), "tmp.db")

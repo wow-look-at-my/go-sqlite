@@ -751,6 +751,10 @@ func TestConcurrentGoroutines(t *testing.T) {
 			t.Logf("recursive test -race: PASS")
 		case
 			strings.Contains(s, "-race is not supported"),
+			// The race detector needs cgo. A CGo-free driver is a
+			// natural thing to test with CGO_ENABLED=0, and doing so
+			// must not fail the suite over a check that cannot run.
+			strings.Contains(s, "-race requires cgo"),
 			strings.Contains(s, "unsupported VMA range"):
 
 			t.Logf("recursive test -race: SKIP: %v", err)
@@ -1435,6 +1439,7 @@ func TestTimeFormat(t *testing.T) {
 	}{
 		{f: "", w: "2021-01-02 16:39:17.123456789 +0000 UTC"},
 		{f: "sqlite", w: "2021-01-02 16:39:17.123456789+00:00"},
+		{f: "datetime", w: "2021-01-02 16:39:17"},
 	}
 	for _, c := range cases {
 		t.Run("", func(t *testing.T) {
@@ -1532,6 +1537,278 @@ func TestTimeFormatBad(t *testing.T) {
 	want := `unknown _time_format "bogus"`
 	if got := err.Error(); got != want {
 		t.Fatalf("got error %q, want %q", got, want)
+	}
+}
+
+func TestTimezone(t *testing.T) {
+	ref := time.Date(2021, 1, 2, 16, 39, 17, 123456789, time.UTC)
+
+	t.Run("write", func(t *testing.T) {
+		cases := []struct {
+			tz string
+			f  string
+			w  string
+		}{
+			{tz: "UTC", f: "sqlite", w: "2021-01-02 16:39:17.123456789+00:00"},
+			{tz: "America/New_York", f: "sqlite", w: "2021-01-02 11:39:17.123456789-05:00"},
+			{tz: "UTC", f: "", w: "2021-01-02 16:39:17.123456789 +0000 UTC"},
+		}
+		for _, c := range cases {
+			t.Run(c.tz+"/"+c.f, func(t *testing.T) {
+				q := make(url.Values)
+				q.Set("_timezone", c.tz)
+				if c.f != "" {
+					q.Set("_time_format", c.f)
+				}
+				dsn := "file::memory:?" + q.Encode()
+				db, err := sql.Open(driverName, dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+
+				if _, err := db.Exec("drop table if exists x; create table x (y text)"); err != nil {
+					t.Fatal(err)
+				}
+
+				if _, err := db.Exec(`insert into x values (?)`, ref); err != nil {
+					t.Fatal(err)
+				}
+
+				var got string
+				if err := db.QueryRow(`select y from x`).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+
+				if got != c.w {
+					t.Fatalf("got %q, want %q", got, c.w)
+				}
+			})
+		}
+	})
+
+	t.Run("read_with_tz", func(t *testing.T) {
+		ny, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Strings that already carry timezone info should preserve the
+		// represented instant while being coerced into the configured timezone.
+		q := make(url.Values)
+		q.Set("_timezone", "America/New_York")
+		q.Set("_texttotime", "true")
+		dsn := "file::memory:?" + q.Encode()
+		db, err := sql.Open(driverName, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		if _, err := db.Exec("create table x (y datetime)"); err != nil {
+			t.Fatal(err)
+		}
+
+		cases := []struct {
+			name  string
+			input string
+			want  time.Time
+		}{
+			{
+				name:  "Z suffix",
+				input: "2021-01-02T16:39:17Z",
+				want:  time.Date(2021, 1, 2, 11, 39, 17, 0, ny),
+			},
+			{
+				name:  "explicit offset",
+				input: "2021-01-02 11:39:17-05:00",
+				want:  time.Date(2021, 1, 2, 11, 39, 17, 0, ny),
+			},
+			{
+				name:  "time string format",
+				input: "2021-01-02 16:39:17.123456789 +0000 UTC",
+				want:  time.Date(2021, 1, 2, 11, 39, 17, 123456789, ny),
+			},
+			{
+				name:  "offset differs from target tz",
+				input: "2021-01-02 19:39:17+03:00",
+				want:  time.Date(2021, 1, 2, 11, 39, 17, 0, ny),
+			},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				if _, err := db.Exec("delete from x"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`insert into x values (?)`, c.input); err != nil {
+					t.Fatal(err)
+				}
+				var got time.Time
+				if err := db.QueryRow(`select y from x`).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+				if got.Location().String() != c.want.Location().String() {
+					t.Fatalf("got location %s, want %s", got.Location(), c.want.Location())
+				}
+				if !got.Equal(c.want) {
+					t.Fatalf("got %v, want %v", got, c.want)
+				}
+			})
+		}
+	})
+
+	t.Run("read", func(t *testing.T) {
+		// Insert a bare datetime string (no timezone) and verify that
+		// _timezone causes the parsed time.Time to have the right location.
+		ny, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		q := make(url.Values)
+		q.Set("_timezone", "America/New_York")
+		q.Set("_texttotime", "true")
+		dsn := "file::memory:?" + q.Encode()
+		db, err := sql.Open(driverName, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		if _, err := db.Exec("create table x (y datetime)"); err != nil {
+			t.Fatal(err)
+		}
+
+		// Insert a raw datetime string, as SQLite's datetime() would produce.
+		if _, err := db.Exec(`insert into x values ('2021-01-02 16:39:17')`); err != nil {
+			t.Fatal(err)
+		}
+
+		var got time.Time
+		if err := db.QueryRow(`select y from x`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+
+		// The raw string "2021-01-02 16:39:17" has no timezone.
+		// _timezone=America/New_York tells the driver to interpret it
+		// as New York time, so the wall clock stays the same but the
+		// location is set.
+		want := time.Date(2021, 1, 2, 16, 39, 17, 0, ny)
+		if got.Location().String() != want.Location().String() {
+			t.Fatalf("got location %s, want %s", got.Location(), want.Location())
+		}
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("read_integer", func(t *testing.T) {
+		ny, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		q := make(url.Values)
+		q.Set("_timezone", "America/New_York")
+		q.Set("_inttotime", "true")
+		q.Set("_time_integer_format", "unix")
+		dsn := "file::memory:?" + q.Encode()
+		db, err := sql.Open(driverName, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+
+		if _, err := db.Exec("create table x (y datetime)"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := db.Exec(`insert into x values (?)`, ref.Unix()); err != nil {
+			t.Fatal(err)
+		}
+
+		var got time.Time
+		if err := db.QueryRow(`select y from x`).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+
+		want := time.Unix(ref.Unix(), 0).In(ny)
+		if got.Location().String() != want.Location().String() {
+			t.Fatalf("got location %s, want %s", got.Location(), want.Location())
+		}
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("roundtrip", func(t *testing.T) {
+		// Write a time.Time and read it back through the same
+		// timezone-configured connection. The instant should be
+		// preserved and the location should be the target timezone.
+		ny, err := time.LoadLocation("America/New_York")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cases := []struct {
+			name string
+			f    string // _time_format, empty for default (time.String)
+		}{
+			{name: "default_format"},
+			{name: "sqlite_format", f: "sqlite"},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				q := make(url.Values)
+				q.Set("_timezone", "America/New_York")
+				q.Set("_texttotime", "true")
+				if c.f != "" {
+					q.Set("_time_format", c.f)
+				}
+				dsn := "file::memory:?" + q.Encode()
+				db, err := sql.Open(driverName, dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+
+				if _, err := db.Exec("create table x (y datetime)"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`insert into x values (?)`, ref); err != nil {
+					t.Fatal(err)
+				}
+
+				var got time.Time
+				if err := db.QueryRow(`select y from x`).Scan(&got); err != nil {
+					t.Fatal(err)
+				}
+
+				if got.Location().String() != ny.String() {
+					t.Fatalf("got location %s, want %s", got.Location(), ny)
+				}
+				if !got.Equal(ref) {
+					t.Fatalf("got %v, want %v (as instant)", got, ref)
+				}
+			})
+		}
+	})
+}
+
+func TestTimezoneBad(t *testing.T) {
+	db, err := sql.Open(driverName, "file::memory:?_timezone=Bogus/Zone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec("select 1")
+	if err == nil {
+		t.Fatal("wanted error")
+	}
+
+	if !strings.Contains(err.Error(), `unknown _timezone "Bogus/Zone"`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1715,6 +1992,53 @@ func TestTextToTimeScanType(t *testing.T) {
 			t.Fatalf("Scan into interface{}: got %T, want time.Time", v)
 		}
 	})
+}
+
+// TestTextToTimeAggregates verifies that under _texttotime=1, aggregate and
+// expression columns over a DATETIME TEXT column (MAX/MIN/COALESCE), which
+// SQLite reports with an empty declared type, are still delivered as time.Time
+// so a Scan into *time.Time succeeds (#248). A non-date TEXT aggregate, whose
+// value does not parse as a time, must still scan as string.
+func TestTextToTimeAggregates(t *testing.T) {
+	db, err := sql.Open(driverName, "file::memory:?_texttotime=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY, ts DATETIME, name TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ ts, name string }{
+		{"2024-01-01 00:00:00+00:00", "alice"},
+		{"2024-06-15 12:30:00+00:00", "bob"},
+	} {
+		if _, err := db.Exec("INSERT INTO t (ts, name) VALUES (?, ?)", row.ts, row.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, q := range []string{
+		"SELECT MAX(ts) FROM t",
+		"SELECT MIN(ts) FROM t",
+		"SELECT COALESCE(MAX(ts), MAX(ts)) FROM t",
+	} {
+		var got time.Time
+		if err := db.QueryRow(q).Scan(&got); err != nil {
+			t.Fatalf("%s: Scan into time.Time: %v", q, err)
+		}
+		if got.IsZero() {
+			t.Fatalf("%s: got zero time", q)
+		}
+	}
+
+	var name string
+	if err := db.QueryRow("SELECT MAX(name) FROM t").Scan(&name); err != nil {
+		t.Fatalf("MAX(name) Scan into string: %v", err)
+	}
+	if name != "bob" {
+		t.Fatalf("MAX(name) = %q, want \"bob\"", name)
+	}
 }
 
 func TestTextToTimeBad(t *testing.T) {
@@ -2223,10 +2547,16 @@ func checkPragmas(db *sql.DB, pragmas []pragmaCfg) error {
 	return nil
 }
 
+// connHookTestSeq keeps the driver name TestConnectionHook registers unique
+// across invocations. sql.Register panics on a name it has already seen and
+// offers no way to undo a registration, so a fixed name takes the whole test
+// binary down on the second iteration of -count>1.
+var connHookTestSeq atomic.Int64
+
 func TestConnectionHook(t *testing.T) {
 	callCount := 0
 	connStr := ":memory:?_connHookTest=1"
-	driverName := "sqlite_conn_hook_test"
+	driverName := fmt.Sprintf("sqlite_conn_hook_test_%d", connHookTestSeq.Add(1))
 
 	testDriver := Driver{}
 	testDriver.RegisterConnectionHook(func(conn ExecQuerierContext, dsn string) error {
@@ -2243,6 +2573,8 @@ func TestConnectionHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	defer db.Close()
 
 	_, err = db.Exec("SELECT 1")
 	if err != nil {
@@ -2624,6 +2956,36 @@ func TestConstraintUniqueError(t *testing.T) {
 
 	if errs, want := err.Error(), "constraint failed: UNIQUE constraint failed: hash.hashval (2067)"; errs != want {
 		t.Fatalf("got error string %q, want %q", errs, want)
+	}
+}
+
+// TestOpenV2FailureErrorMessage verifies that a failed open returns a
+// structured *Error with the expected SQLITE_CANTOPEN code and a coherent
+// error message. On this code path sqlite3_open_v2 allocates a handle even
+// though it returns an error; the leak of that handle (and of libc.TLS in
+// newConn) is covered by leak_test.go.
+func TestOpenV2FailureErrorMessage(t *testing.T) {
+	badDSN := filepath.Join(t.TempDir(), "missing", "impossible.db")
+	db, err := sql.Open(driverName, badDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err == nil {
+		t.Fatal("expected Ping to fail for invalid path")
+	}
+
+	var sqliteErr *Error
+	if !errors.As(err, &sqliteErr) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
+	}
+	if sqliteErr.Code() != sqlite3.SQLITE_CANTOPEN {
+		t.Errorf("expected SQLITE_CANTOPEN (%d), got code %d: %s", sqlite3.SQLITE_CANTOPEN, sqliteErr.Code(), err)
+	}
+	if msg := sqliteErr.Error(); !strings.Contains(msg, "unable to open database file") {
+		t.Errorf("error message %q does not contain expected SQLITE_CANTOPEN text", msg)
 	}
 }
 
@@ -3317,6 +3679,131 @@ func (c *concurrentBenchmark) makeWriters(n int, mode string) {
 	wait.Wait()
 }
 
+func TestColumnInfo(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	for _, stmt := range []string{
+		`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, secret TEXT)`,
+		`CREATE VIEW v AS SELECT id, name FROM users`,
+		`INSERT INTO users (id, name, secret) VALUES (1, 'a', 's1')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("setup %q: %v", stmt, err)
+		}
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// columnInformer mirrors the interface a user of the driver would
+	// declare locally to call ColumnInfo via (*sql.Conn).Raw without
+	// importing the concrete driver type.
+	type columnInformer interface {
+		ColumnInfo(query string) ([]ColumnInfo, error)
+	}
+	columnInfo := func(query string) ([]ColumnInfo, error) {
+		var info []ColumnInfo
+		err := conn.Raw(func(driverConn any) error {
+			ci, ok := driverConn.(columnInformer)
+			if !ok {
+				return fmt.Errorf("driver does not support ColumnInfo: %T", driverConn)
+			}
+			var err error
+			info, err = ci.ColumnInfo(query)
+			return err
+		})
+		return info, err
+	}
+
+	cases := []struct {
+		name  string
+		query string
+		want  []ColumnInfo
+	}{
+		{
+			name:  "direct column refs",
+			query: `SELECT id, name, secret FROM users`,
+			want: []ColumnInfo{
+				{Name: "id", DeclType: "INTEGER", DatabaseName: "main", TableName: "users", OriginName: "id"},
+				{Name: "name", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "name"},
+				{Name: "secret", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "secret"},
+			},
+		},
+		{
+			name:  "aliased column keeps origin",
+			query: `SELECT secret AS s FROM users`,
+			want: []ColumnInfo{
+				{Name: "s", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "secret"},
+			},
+		},
+		{
+			name:  "expression has no origin",
+			query: `SELECT LOWER(name) FROM users`,
+			want:  []ColumnInfo{{Name: "LOWER(name)"}},
+		},
+		{
+			name:  "constant has no origin",
+			query: `SELECT 1`,
+			want:  []ColumnInfo{{Name: "1"}},
+		},
+		{
+			name:  "mixed",
+			query: `SELECT id, LOWER(name), 42 FROM users`,
+			want: []ColumnInfo{
+				{Name: "id", DeclType: "INTEGER", DatabaseName: "main", TableName: "users", OriginName: "id"},
+				{Name: "LOWER(name)"},
+				{Name: "42"},
+			},
+		},
+		{
+			name:  "view resolves to underlying table",
+			query: `SELECT id, name FROM v`,
+			want: []ColumnInfo{
+				{Name: "id", DeclType: "INTEGER", DatabaseName: "main", TableName: "users", OriginName: "id"},
+				{Name: "name", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "name"},
+			},
+		},
+		{
+			name:  "select star",
+			query: `SELECT * FROM users`,
+			want: []ColumnInfo{
+				{Name: "id", DeclType: "INTEGER", DatabaseName: "main", TableName: "users", OriginName: "id"},
+				{Name: "name", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "name"},
+				{Name: "secret", DeclType: "TEXT", DatabaseName: "main", TableName: "users", OriginName: "secret"},
+			},
+		},
+		{
+			name:  "no output columns (comment only)",
+			query: `-- just a comment`,
+			want:  nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := columnInfo(tc.query)
+			if err != nil {
+				t.Fatalf("ColumnInfo(%q): %v", tc.query, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("ColumnInfo(%q) = %+v, want %+v", tc.query, got, tc.want)
+			}
+		})
+	}
+
+	// Invalid SQL surfaces the prepare error.
+	if _, err := columnInfo(`SELECT * FROM no_such_table`); err == nil {
+		t.Fatal("expected error on invalid query, got nil")
+	}
+}
+
 func TestLimit(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -3811,4 +4298,385 @@ func TestTxCommitBusyFix(t *testing.T) {
 
 	// If we got here, the fix is working. Clean up.
 	tx3.Rollback()
+}
+
+// TestMultiStmtQueryStringRoundtrip alternates between running parameterized and parameter-free statements.
+// After each round-trip we immediately bind fresh strings on the same connection to stress the C allocator.
+// This is a regression test for a double-free bug of stale bind-parameter memory.
+// Run with -race to enable checkptr, which catches the problem quickly and reliably.
+func TestMultiStmtQueryStringRoundtrip(t *testing.T) {
+	db, err := sql.Open("sqlite", "file::memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1) // force connection reuse so that corruption accumulates
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE t(v TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// To reproduce without -race/checkptr, increase the number of iterations here a lot and wait for a crash, a hang, or data corruption
+	const iters = 1
+	for i := range iters {
+		val := fmt.Sprintf("iter-%04d-%s", i, strings.Repeat("x", 1024))
+
+		// Multi-statement query: first statement binds a string param, second statement has no params.
+		rows, err := conn.QueryContext(ctx, "INSERT INTO t VALUES(?); SELECT v FROM t WHERE rowid = last_insert_rowid()", val)
+		if err != nil {
+			t.Fatalf("(%d) query err: %v", i, err)
+		}
+		var got string
+		if rows.Next() {
+			if err := rows.Scan(&got); err != nil {
+				t.Fatalf("(%d) scan err: %v", i, err)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("(%d) rows err: %v", i, err)
+		}
+		// Without the fix, this Close double-frees the string
+		if err := rows.Close(); err != nil {
+			t.Fatalf("(%d) close err: %v", i, err)
+		}
+
+		if got != val {
+			t.Fatalf("(%d) got len=%d\nwant len=%d", i, len(got), len(val))
+		}
+
+		// Immediately bind a fresh string to pressure the allocator into reusing the double-freed block.
+		check := fmt.Sprintf("check-%04d-%s", i, strings.Repeat("y", 1024))
+		var got2 string
+		if err := conn.QueryRowContext(ctx, "SELECT ?", check).Scan(&got2); err != nil {
+			t.Fatalf("(%d) check query err: %v", i, err)
+		}
+		if got2 != check {
+			t.Fatalf("(%d) data corruption: got len=%d\nwant len=%d", i, len(got2), len(check))
+		}
+	}
+}
+
+// TestExecReturningMultiRow verifies that Exec() with a DML RETURNING clause
+// that affects multiple rows completes the full operation (not just the first row).
+func TestExecReturningMultiRow(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// INSERT multiple rows with RETURNING via Exec.
+	result, err := db.Exec("INSERT INTO t (id, v) VALUES (1,'a'), (2,'b'), (3,'c') RETURNING id")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All three rows must actually exist in the table.
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM t").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 rows in table after INSERT...RETURNING via Exec, got %d", count)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("expected RowsAffected()==3, got %d", n)
+	}
+
+	// UPDATE all rows with RETURNING via Exec.
+	result, err = db.Exec("UPDATE t SET v = v || '!' RETURNING id")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err = result.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("expected RowsAffected()==3 for UPDATE...RETURNING, got %d", n)
+	}
+
+	// Verify all rows were actually updated.
+	rows, err := db.Query("SELECT v FROM t ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var vals []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		vals = append(vals, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(vals) != 3 || vals[0] != "a!" || vals[1] != "b!" || vals[2] != "c!" {
+		t.Fatalf("expected [a! b! c!], got %v", vals)
+	}
+
+	// DELETE with RETURNING via Exec.
+	result, err = db.Exec("DELETE FROM t RETURNING id")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err = result.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("expected RowsAffected()==3 for DELETE...RETURNING, got %d", n)
+	}
+
+	if err := db.QueryRow("SELECT count(*) FROM t").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 rows after DELETE...RETURNING via Exec, got %d", count)
+	}
+}
+
+func TestExecReturningMultiStatement(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Multi-statement exec forces the fallback path in stmt.exec.
+	// The RETURNING statement must be last so its result is the one checked.
+	result, err := db.Exec("SELECT 1; INSERT INTO t (id, v) VALUES (1,'a'), (2,'b'), (3,'c') RETURNING id")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT count(*) FROM t").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 rows after multi-statement INSERT...RETURNING, got %d", count)
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("expected RowsAffected()==3, got %d", n)
+	}
+}
+
+// TestExecReturningCancelDuringDrain verifies that cancelling the context
+// during the row-drain loop of a DML RETURNING Exec returns an error.
+func TestExecReturningCancelDuringDrain(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE t (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed enough rows so the RETURNING drain takes measurable time.
+	if _, err := db.Exec(`
+		WITH RECURSIVE gen(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM gen WHERE n < 10000)
+		INSERT INTO t SELECT n FROM gen
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel quickly so the drain loop is interrupted.
+	go func() {
+		time.Sleep(time.Microsecond)
+		cancel()
+	}()
+
+	_, err = db.ExecContext(ctx, "DELETE FROM t RETURNING id")
+	if err == nil {
+		// The cancel is a race — it may not fire in time.
+		// That's OK; we're testing that cancellation is respected, not guaranteed.
+		t.Log("context cancel did not fire during drain (race); test is inconclusive")
+		return
+	}
+	if !(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "interrupted (9)")) {
+		t.Fatalf("expected context.Canceled, context.DeadlineExceeded, or interrupted error, got %v", err)
+	}
+}
+
+func TestDBPageVtab(t *testing.T) {
+	// Open an in-memory database
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create a table and insert some data to ensure pages are allocated
+	_, err = db.Exec(`
+		CREATE TABLE test_dbpage (id INTEGER PRIMARY KEY, val TEXT);
+		INSERT INTO test_dbpage (val) VALUES ('hello dbpage');
+	`)
+	if err != nil {
+		t.Fatalf("Failed to setup test table: %v", err)
+	}
+
+	// Query the sqlite_dbpage virtual table.
+	// If -DSQLITE_ENABLE_DBPAGE_VTAB was not enabled, this will return an error
+	// (e.g., "no such table: sqlite_dbpage").
+	var pgno int
+	var data []byte
+
+	// We'll query the first page (pgno = 1), which contains the SQLite header.
+	err = db.QueryRow("SELECT pgno, data FROM sqlite_dbpage WHERE pgno = 1").Scan(&pgno, &data)
+	if err != nil {
+		t.Fatalf("Failed to query sqlite_dbpage: %v", err)
+	}
+
+	// Basic sanity checks on the returned page
+	if pgno != 1 {
+		t.Errorf("Expected page number 1, got %d", pgno)
+	}
+
+	if len(data) == 0 {
+		t.Error("Expected page data to be non-empty")
+	}
+
+	// The first 16 bytes of page 1 always contain the SQLite format string:
+	// "SQLite format 3\000"
+	expectedHeader := "SQLite format 3\x00"
+	if len(data) >= 16 {
+		header := string(data[:16])
+		if header != expectedHeader {
+			t.Errorf("Expected SQLite header %q, got %q", expectedHeader, header)
+		}
+	} else {
+		t.Errorf("Page 1 data is too short to contain a valid SQLite header: %d bytes", len(data))
+	}
+}
+
+// TestInMemoryDBSurvivesContextCancel is a regression test for #196:
+// after a context-cancelled query, an in-memory database connection must
+// not be discarded by database/sql; otherwise the entire in-memory store
+// is lost. The fix for #198 added an Xsqlite3_is_interrupted check to
+// (*conn).usable() that mistakenly applied to in-memory databases too,
+// reintroducing the bug originally fixed by !74.
+//
+// File-backed databases keep the existing behaviour: an interrupted
+// connection is still discarded, since the underlying data lives on disk.
+func TestInMemoryDBSurvivesContextCancel(t *testing.T) {
+	t.Run("in-memory", func(t *testing.T) {
+		db, err := sql.Open(driverName, "file::memory:?cache=shared")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		db.SetMaxOpenConns(1)
+
+		if _, err := db.Exec("CREATE TABLE t (v INT)"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("INSERT INTO t VALUES (1), (2), (3)"); err != nil {
+			t.Fatal(err)
+		}
+
+		raw, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_ = raw.Raw(func(dc any) error {
+			c, ok := dc.(*conn)
+			if !ok {
+				t.Fatalf("driver conn is %T, want *conn", dc)
+			}
+			if !c.inMemory {
+				t.Fatalf("conn opened with file::memory: must be marked inMemory")
+			}
+			if !c.usable() {
+				t.Fatalf("fresh in-memory conn must be usable")
+			}
+			sqlite3.Xsqlite3_interrupt(c.tls, c.db)
+			if !c.usable() {
+				t.Errorf("in-memory conn must remain usable after interrupt (issue #196)")
+			}
+			return nil
+		})
+		raw.Close()
+
+		var n int
+		if err := db.QueryRow("SELECT count(*) FROM t").Scan(&n); err != nil {
+			t.Fatalf("table lost after ctx-cancel: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("expected 3 rows after ctx-cancel, got %d", n)
+		}
+	})
+
+	t.Run("file-backed connection still discarded on interrupt", func(t *testing.T) {
+		// Sanity check that the fix for #198 is preserved: a file-backed
+		// connection that was actually interrupted is still reported as
+		// unusable so that database/sql will drop it.
+		dir := t.TempDir()
+		db, err := sql.Open(driverName, "file:"+filepath.Join(dir, "t.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		db.SetMaxOpenConns(1)
+
+		raw, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+
+		// Confirm that IsValid honours the interrupted state on a
+		// file-backed conn.
+		_ = raw.Raw(func(dc any) error {
+			c, ok := dc.(*conn)
+			if !ok {
+				t.Fatalf("driver conn is %T, want *conn", dc)
+			}
+			if c.inMemory {
+				t.Fatalf("file-backed conn unexpectedly marked inMemory")
+			}
+			if !c.usable() {
+				t.Fatalf("fresh file-backed conn must be usable")
+			}
+			sqlite3.Xsqlite3_interrupt(c.tls, c.db)
+			if c.usable() {
+				t.Errorf("file-backed conn must be reported unusable after interrupt")
+			}
+			return nil
+		})
+	})
 }

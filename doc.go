@@ -8,6 +8,17 @@
 // SQLite is an in-process implementation of a self-contained, serverless,
 // zero-configuration, transactional SQL database engine.
 //
+// # Pluggable page cache
+//
+// The package exposes a Go-facing wrapper for SQLite's
+// SQLITE_CONFIG_PCACHE2 mechanism. Applications can supply their own
+// page cache implementation by registering a [PageCache] before the
+// first [sql.Open] via [RegisterPageCache]. See the docstrings
+// on [PageCache], [Cache], and [Page] for the contract; the binding
+// owns the sqlite3_pcache_page stub on behalf of the implementation
+// and re-consults Cache.Fetch on every SQLite request, so a bounded
+// and evicting purgeable cache works as the C contract intends.
+//
 // # Fragile modernc.org/libc dependency
 //
 // When you import this package you should use in your go.mod file the exact
@@ -27,21 +38,26 @@
 //
 //	OS      Arch    SQLite version
 //	------------------------------
-//	darwin	amd64   3.51.2
-//	darwin	arm64   3.51.2
-//	freebsd	amd64   3.51.2
-//	freebsd	arm64   3.51.2
-//	linux	386     3.51.2
-//	linux	amd64   3.51.2
-//	linux	arm     3.51.2
-//	linux	arm64   3.51.2
-//	linux	loong64 3.51.2
-//	linux	ppc64le 3.51.2
-//	linux	riscv64 3.51.2
-//	linux	s390x   3.51.2
-//	windows	386     3.51.2
-//	windows	amd64   3.51.2
-//	windows	arm64   3.51.2
+//	darwin	amd64   3.53.3
+//	darwin	arm64   3.53.3
+//	freebsd	386     3.53.3
+//	freebsd	amd64   3.53.3
+//	freebsd	arm     3.53.3
+//	freebsd	arm64   3.53.3
+//	linux	386     3.53.3
+//	linux	amd64   3.53.3
+//	linux	arm     3.53.3
+//	linux	arm64   3.53.3
+//	linux	loong64 3.53.3
+//	linux	ppc64le 3.53.3
+//	linux	riscv64 3.53.3
+//	linux	s390x   3.53.3
+//	netbsd	amd64   3.53.3
+//	openbsd	amd64   3.53.3
+//	openbsd	arm64   3.53.3
+//	windows	386     3.53.3
+//	windows	amd64   3.53.3
+//	windows	arm64   3.53.3
 //
 // # Benchmarks
 //
@@ -70,46 +86,52 @@
 //
 //	...
 //
+// [NewConnector] is an alternative entry point returning a
+// [driver.Connector] for use with [sql.OpenDB]. It opens the same
+// connections sql.Open does, from the same driver, and exists for callers that
+// need to interpose on them -- tracing, metrics, or connection-scoped setup --
+// which sql.Open gives no access to. See its docstring for an example.
+//
 // # Debug and development versions
 //
-// A comma separated list of options can be passed to `go generate` via the
-// environment variable GO_GENERATE. Some useful options include for example:
+// The transpiled SQLite sources under lib/, and the sqlite-vec sources under
+// vec/, are not generated in this repository. They are produced by
+// modernc.org/libsqlite3 and modernc.org/libsqlite_vec respectively, which own
+// the transpilation and the SQLite compile-time options it uses, and are
+// copied here by
 //
-//	-DSQLITE_DEBUG
-//	-DSQLITE_MEM_DEBUG
-//	-ccgo-verify-structs
+//	$ make vendor
 //
-// To create a debug/development version, issue for example:
-//
-//	$ GO_GENERATE=-DSQLITE_DEBUG,-DSQLITE_MEM_DEBUG go generate
-//
-// Note: To run `go generate` you need to have modernc.org/ccgo/v3 installed.
+// which reads them from checkouts of those two repositories placed next to
+// this one. To build a debug or otherwise modified version, adjust the
+// compile-time options in modernc.org/libsqlite3, regenerate there with 'make
+// generate', and vendor the result here.
 //
 // # Hacking
 //
 // This is an example of how to use the debug logs in modernc.org/libc when hunting a bug.
 //
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ git status
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ git status
 //	On branch master
 //	Your branch is up to date with 'origin/master'.
 //
 //	nothing to commit, working tree clean
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ git log -1
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ git log -1
 //	commit df33b8d15107f3cc777799c0fe105f74ef499e62 (HEAD -> master, tag: v1.21.1, origin/master, origin/HEAD, wips, ok)
 //	Author: Jan Mercl <0xjnml@gmail.com>
 //	Date:   Mon Mar 27 16:18:28 2023 +0200
 //
 //	    upgrade to SQLite 3.41.2
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ rm -f /tmp/libc.log ; go test -v -tags=libc.dmesg -run TestScalar ; ls -l /tmp/libc.log
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ rm -f /tmp/libc.log ; go test -v -tags=libc.dmesg -run TestScalar ; ls -l /tmp/libc.log
 //	test binary compiled for linux/amd64
 //	=== RUN   TestScalar
 //	--- PASS: TestScalar (0.09s)
 //	PASS
 //	ok  github.com/wow-look-at-my/go-sqlite 0.128s
 //	-rw-r--r-- 1 jnml jnml 76 Apr  6 11:22 /tmp/libc.log
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ cat /tmp/libc.log
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ cat /tmp/libc.log
 //	[10723 sqlite.test] 2023-04-06 11:22:48.288066057 +0200 CEST m=+0.000707150
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$
 //
 // The /tmp/libc.log file is created as requested. No useful messages there because none are enabled in libc. Let's try to enable Xwrite as an example.
 //
@@ -163,21 +185,23 @@
 //	 }
 //	0:jnml@e5-1650:~/src/modernc.org/libc$
 //
-// We need to tell the Go build system to use our local, patched/debug libc:
+// We need to tell the Go build system to use our local, patched/debug libc.
+// 'make work' sets up a go.work covering this and the sibling repositories;
+// by hand it is:
 //
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ go work use $(go env GOPATH)/src/modernc.org/libc
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ go work use .
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ go work use $(go env GOPATH)/src/modernc.org/libc
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ go work use .
 //
 // And run the test again:
 //
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ rm -f /tmp/libc.log ; go test -v -tags=libc.dmesg -run TestScalar ; ls -l /tmp/libc.log
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ rm -f /tmp/libc.log ; go test -v -tags=libc.dmesg -run TestScalar ; ls -l /tmp/libc.log
 //	test binary compiled for linux/amd64
 //	=== RUN   TestScalar
 //	--- PASS: TestScalar (0.26s)
 //	PASS
 //	ok   github.com/wow-look-at-my/go-sqlite 0.285s
 //	-rw-r--r-- 1 jnml jnml 918 Apr  6 11:29 /tmp/libc.log
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$ cat /tmp/libc.log
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$ cat /tmp/libc.log
 //	[11910 sqlite.test] 2023-04-06 11:29:13.143589542 +0200 CEST m=+0.000689270
 //	[11910 sqlite.test] libc_linux.go:337:Xwrite: 8 0x200: 0x200
 //	[11910 sqlite.test] libc_linux.go:337:Xwrite: 8 0xc: 0xc
@@ -193,11 +217,11 @@
 //	[11910 sqlite.test] libc_linux.go:337:Xwrite: 8 0xc: 0xc
 //	[11910 sqlite.test] libc_linux.go:337:Xwrite: 7 0x1000: 0x1000
 //	[11910 sqlite.test] libc_linux.go:337:Xwrite: 7 0x1000: 0x1000
-//	0:jnml@e5-1650:~/src/modernc.org/sqlite$
+//	0:jnml@e5-1650:~/src/github.com/wow-look-at-my/go-sqlite$
 //
 // # Sqlite documentation
 //
 // See https://sqlite.org/docs.html
 //
-// [The SQLite Drivers Benchmarks Game]: https://pkg.go.dev/modernc.org/sqlite-bench#readme-tl-dr-scorecard
+// [The SQLite Drivers Benchmarks Game]: https://pkg.go.dev/github.com/wow-look-at-my/go-sqlite-bench#readme-tl-dr-scorecard
 package sqlite // import "github.com/wow-look-at-my/go-sqlite"

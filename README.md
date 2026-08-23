@@ -1,4 +1,4 @@
-Fork of [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — a CGo-free, pure Go SQLite driver.
+Fork of [github.com/wow-look-at-my/go-sqlite](https://pkg.go.dev/github.com/wow-look-at-my/go-sqlite) — a CGo-free, pure Go SQLite driver.
 
 Import path: `github.com/wow-look-at-my/go-sqlite`
 

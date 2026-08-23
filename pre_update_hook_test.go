@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"database/sql"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -115,4 +116,66 @@ func TestPreUpdateHook(t *testing.T) {
 		t.Errorf("rollback hook: expect %d, got %d", 0, rollbackCount)
 	}
 
+}
+
+func TestPreUpdateHookLargeRowID(t *testing.T) {
+	driverName := fmt.Sprintf("sqlite_preupdate_large_rowid_%p", t)
+	var gotOldRowID, gotNewRowID int64
+	var gotOp int32
+
+	var testDriver sqlite.Driver
+	testDriver.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, dsn string) error {
+		if hooker, ok := conn.(sqlite.HookRegisterer); ok {
+			hooker.RegisterPreUpdateHook(func(data sqlite.SQLitePreUpdateData) {
+				gotOp = data.Op
+				gotOldRowID = data.OldRowID
+				gotNewRowID = data.NewRowID
+			})
+		}
+		return nil
+	})
+	sql.Register(driverName, &testDriver)
+
+	db, err := sql.Open(driverName, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const largeRowID = int64(1) << 40 // 1 TiB — well beyond int32 range
+	_, err = db.Exec(`INSERT INTO t VALUES(?, 'hello')`, largeRowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotOp != sqlite3.SQLITE_INSERT {
+		t.Fatalf("expected INSERT op, got %d", gotOp)
+	}
+	if gotNewRowID != largeRowID {
+		t.Errorf("NewRowID: got %d, want %d", gotNewRowID, largeRowID)
+	}
+
+	// Also test UPDATE with large rowids
+	const newLargeRowID = int64(1)<<40 + 1
+	gotOldRowID = 0
+	gotNewRowID = 0
+	_, err = db.Exec(`UPDATE t SET id = ?, v = 'updated' WHERE id = ?`, newLargeRowID, largeRowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotOp != sqlite3.SQLITE_UPDATE {
+		t.Fatalf("expected UPDATE op, got %d", gotOp)
+	}
+	if gotOldRowID != largeRowID {
+		t.Errorf("OldRowID after UPDATE: got %d, want %d", gotOldRowID, largeRowID)
+	}
+	if gotNewRowID != newLargeRowID {
+		t.Errorf("NewRowID after UPDATE: got %d, want %d", gotNewRowID, newLargeRowID)
+	}
 }
