@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"testing"
 
-	"modernc.org/sqlite"
-	"modernc.org/sqlite/pcache"
+	"github.com/wow-look-at-my/go-sqlite"
+	"github.com/wow-look-at-my/go-sqlite/pcache"
 )
 
 // BenchmarkPoolBoundedCache exercises the workload from the SQLite

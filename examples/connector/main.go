@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"modernc.org/sqlite"
+	"github.com/wow-look-at-my/go-sqlite"
 )
 
 // tracingConnector is the wrapper an instrumentation library writes: it

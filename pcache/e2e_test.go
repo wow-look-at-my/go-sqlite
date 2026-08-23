@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"modernc.org/sqlite"
-	"modernc.org/sqlite/pcache"
+	"github.com/wow-look-at-my/go-sqlite"
+	"github.com/wow-look-at-my/go-sqlite/pcache"
 )
 
 // poolUnderTest is the singleton Pool installed in TestMain. The

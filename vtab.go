@@ -123,7 +123,7 @@ func registerModule(name string, m vtab.Module) error {
 
 // RegisterModule registers a virtual table module on d alone, so it reaches
 // only the connections d opens. It is the per-driver counterpart of
-// [modernc.org/sqlite/vtab.RegisterModule], which reaches it by way of the
+// [github.com/wow-look-at-my/go-sqlite/vtab.RegisterModule], which reaches it by way of the
 // *sql.DB passed as that function's first argument.
 //
 // Connections d opens also receive every module registered through the
@@ -137,7 +137,7 @@ func registerModule(name string, m vtab.Module) error {
 // that cannot collide, or register through the package-level path instead.
 //
 // Registration applies to new connections only; see
-// [modernc.org/sqlite/vtab.RegisterModule] for the full contract.
+// [github.com/wow-look-at-my/go-sqlite/vtab.RegisterModule] for the full contract.
 func (d *Driver) RegisterModule(name string, m vtab.Module) (err error) {
 	if dmesgs {
 		defer func() {
