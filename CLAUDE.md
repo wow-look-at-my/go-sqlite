@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this package is
 
-`modernc.org/sqlite` is a pure-Go `database/sql/driver` for SQLite — **CGo-free**. The SQLite C amalgamation is transpiled to Go via `modernc.org/ccgo`; the generated code lives in this repo as per-`GOOS`/`GOARCH` files under `lib/` (SQLite itself), `vec/` (the `sqlite-vec` extension), and `vfs/` (the C side of the Go-fs VFS bridge). Runtime support — `malloc`, `pthread`, syscalls, etc. — is provided by `modernc.org/libc`.
+`github.com/wow-look-at-my/go-sqlite` is a pure-Go `database/sql/driver` for SQLite — **CGo-free**. The SQLite C amalgamation is transpiled to Go via `modernc.org/ccgo`; the generated code lives in this repo as per-`GOOS`/`GOARCH` files under `lib/` (SQLite itself), `vec/` (the `sqlite-vec` extension), and `vfs/` (the C side of the Go-fs VFS bridge). Runtime support — `malloc`, `pthread`, syscalls, etc. — is provided by `modernc.org/libc`.
 
 The hand-written Go on top of that transpiled core implements the `database/sql/driver` shim and additional Go-facing APIs (virtual tables, VFS, hooks, UDFs).
 
@@ -12,8 +12,8 @@ The hand-written Go on top of that transpiled core implements the `database/sql/
 
 - `sqlite.go`, `conn.go`, `driver.go`, `stmt.go`, `rows.go`, `tx.go`, `backup.go`, `error.go`, `result.go`, `convert.go` — hand-written `database/sql/driver` implementation calling into `lib/`.
 - `vtab.go`, `pre_update_hook.go`, `fcntl.go`, `mutex.go` — Go-facing extensions wired to SQLite hooks/trampolines.
-- `lib/` — transpiled SQLite 3.53.3. One `sqlite_<goos>_<goarch>.go` per supported triple; `defs.go`, `hooks.go`, `hooks_linux_arm64.go`, `mutex.go`, plus `libsqlite3_freebsd.go`/`libsqlite3_windows.go` hold hand-written patches that augment the generated code. Import as `sqlite3 "modernc.org/sqlite/lib"`.
-- `vec/` — transpiled `sqlite-vec` v0.1.9, auto-registers via `sqlite3_auto_extension` in `patches.go` on package init. Activate by blank-importing: `_ "modernc.org/sqlite/vec"`. Covers the same 19 targets `lib/` does; `vec_test.go`'s `//go:build` constrains by GOOS only.
+- `lib/` — transpiled SQLite 3.53.3. One `sqlite_<goos>_<goarch>.go` per supported triple; `defs.go`, `hooks.go`, `hooks_linux_arm64.go`, `mutex.go`, plus `libsqlite3_freebsd.go`/`libsqlite3_windows.go` hold hand-written patches that augment the generated code. Import as `sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"`.
+- `vec/` — transpiled `sqlite-vec` v0.1.9, auto-registers via `sqlite3_auto_extension` in `patches.go` on package init. Activate by blank-importing: `_ "github.com/wow-look-at-my/go-sqlite/vec"`. Covers the same 19 targets `lib/` does; `vec_test.go`'s `//go:build` constrains by GOOS only.
 - `vfs/` — exposes a Go `fs.FS` as a read-only SQLite VFS. `vfs.New(fsys)` returns a registered VFS name; open with `?vfs=<name>`. C side is transpiled per platform from `vfs/c/vfs.c` via the `vfs/Makefile`.
 - `vtab/` — Go-facing virtual-table API (no dependency on the transpiled C). `vtab.RegisterModule(db, name, module)` registers modules on **new connections only**; a nil `db` targets the driver registered as `sqlite`, a non-nil `db` the driver backing it (via `vtab.ModuleRegisterer`). The bridge to C lives in the top-level `vtab.go`. See `vtab/doc.go` for the contract (Updater/Renamer/Transactional optional interfaces, re-entrancy rules, ArgIndex/Omit semantics).
 - `vendor_libs/main.go` (build tag `none`) — regeneration tool. Reads transpiled `ccgo_<goos>_<goarch>.go` from sibling repos `../libsqlite3` and `../libsqlite_vec`, rewrites package names and imports, and writes `lib/sqlite_*.go` / `vec/vec_*.go`. Invoked by `make vendor`.
@@ -49,7 +49,7 @@ When debugging into `libc`, use `make work` (or a manual `go work init && go wor
 ## Repository / release workflow
 
 - The canonical repo is GitLab `cznic/sqlite`. The GitHub `modernc-org/sqlite` mirror **does accept** issues and PRs, but PRs land via a manual cross-merge into GitLab — there can be a delay. The PRs listed in `CHANGELOG.md` (e.g. "merge request #113") are GitLab MR numbers, not GitHub PRs.
-- Per `HACKING.md`: this repo is **not** auto-tagged — `builder.json` has `"autotag": "<none>"` because too many projects depend on `modernc.org/sqlite` to risk bot tagging. Releases are tagged **manually by the maintainer**; don't tag unless asked, and only once [the builder dashboard](https://modern-c.appspot.com/-/builder/?importpath=modernc.org%2fsqlite) is green for all platforms listed in `builder.json`.
+- Per `HACKING.md`: this repo is **not** auto-tagged — `builder.json` has `"autotag": "<none>"` because too many projects depend on `github.com/wow-look-at-my/go-sqlite` to risk bot tagging. Releases are tagged **manually by the maintainer**; don't tag unless asked, and only once [the builder dashboard](https://modern-c.appspot.com/-/builder/?importpath=modernc.org%2fsqlite) is green for all platforms listed in `builder.json`.
 - `go.mod` `retract` directives encode known-broken versions; treat them as load-bearing — don't remove entries when bumping the module.
 
 ## Driver registration model

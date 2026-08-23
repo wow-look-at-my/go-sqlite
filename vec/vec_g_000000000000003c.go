@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "modernc.org/sqlite/lib"
+	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 type Tconstraint_handler_t = uintptr

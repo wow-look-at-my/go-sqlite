@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "modernc.org/sqlite/lib"
+	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 func Xparse_npy_file(tls *libc.TLS, pVTab uintptr, file uintptr, pCur uintptr) (r int32) {

@@ -7,7 +7,7 @@ package pcache
 import (
 	"testing"
 
-	"modernc.org/sqlite"
+	"github.com/wow-look-at-my/go-sqlite"
 )
 
 // pcacheCreate is a shortcut to exercise the Pool with realistic

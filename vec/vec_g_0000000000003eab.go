@@ -6,7 +6,7 @@ package vec
 
 import (
 	"modernc.org/libc"
-	libsqlite3 "modernc.org/sqlite/lib"
+	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 func Xsqlite3_vec_init(tls *libc.TLS, db uintptr, pzErrMsg uintptr, pApi uintptr) (r int32) {
