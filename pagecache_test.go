@@ -6,8 +6,6 @@ package sqlite
 
 import (
 	"errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"reflect"
 	"strings"
 	"sync"
@@ -49,34 +47,44 @@ func TestPCacheMethods2Layout(t *testing.T) {
 	tp := reflect.TypeOf(m)
 	for name, kind := range wantKinds {
 		f, ok := tp.FieldByName(name)
-		assert.True(t, ok)
-
-		assert.Equal(t, kind, f.Type.Kind())
-
+		if !ok {
+			t.Errorf("pcacheMethods2.%s is missing (struct regeneration drift)", name)
+			continue
+		}
+		if f.Type.Kind() != kind {
+			t.Errorf("pcacheMethods2.%s kind is %s, want %s", name, f.Type.Kind(), kind)
+		}
 	}
 
 	minSize := unsafe.Sizeof(int32(0)) + 12*unsafe.Sizeof(uintptr(0))
-	require.GreaterOrEqual(t, unsafe.Sizeof(m), minSize)
+	if unsafe.Sizeof(m) < minSize {
+		t.Fatalf("unsafe.Sizeof(pcacheMethods2) = %d, want >= %d (struct shrunk; layout broken)",
+			unsafe.Sizeof(m), minSize)
+	}
 
 	off := func(name string) uintptr {
 		f, _ := tp.FieldByName(name)
 		return f.Offset
 	}
-	assert.Greater(t, (off("FpArg") > off("FiVersion")))
-
-	assert.Greater(t, (off("FxInit") > off("FpArg")))
-
-	assert.Greater(t, (off("FxShrink") > off("FxDestroy")))
-
+	if !(off("FpArg") > off("FiVersion")) {
+		t.Errorf("FpArg offset (%d) must follow FiVersion (%d)", off("FpArg"), off("FiVersion"))
+	}
+	if !(off("FxInit") > off("FpArg")) {
+		t.Errorf("FxInit offset (%d) must follow FpArg (%d)", off("FxInit"), off("FpArg"))
+	}
+	if !(off("FxShrink") > off("FxDestroy")) {
+		t.Errorf("FxShrink offset (%d) must follow FxDestroy (%d)", off("FxShrink"), off("FxDestroy"))
+	}
 }
 
 // TestRegisterPageCacheNil covers the nil-module rejection path.
 // Pure input validation, does not touch pcacheState beyond reading
 // nothing, safe to run in any order with other tests.
 func TestRegisterPageCacheNil(t *testing.T) {
-	err := RegisterPageCache(nil)
-	require.False(t, err == nil || !strings.Contains(err.Error(), "RegisterPageCache(nil)"))
-
+	if err := RegisterPageCache(nil); err == nil ||
+		!strings.Contains(err.Error(), "RegisterPageCache(nil)") {
+		t.Fatalf("RegisterPageCache(nil) error = %v, want sentinel message", err)
+	}
 }
 
 // noopModule is a PageCache whose factory returns a noopCache
@@ -137,11 +145,12 @@ func TestRegisterPageCacheLifecycle(t *testing.T) {
 			pcacheState.openGate.Unlock()
 		}()
 
-		assert.NoError(t, RegisterPageCache(pm1))
-
-		err := RegisterPageCache(pm2)
-		assert.True(t, errors.Is(err, ErrPageCacheConflict))
-
+		if err := RegisterPageCache(pm1); err != nil {
+			t.Errorf("re-register same pointer err = %v, want nil", err)
+		}
+		if err := RegisterPageCache(pm2); !errors.Is(err, ErrPageCacheConflict) {
+			t.Errorf("register different pointer err = %v, want ErrPageCacheConflict", err)
+		}
 	})
 
 	t.Run("TooLate", func(t *testing.T) {
@@ -159,9 +168,9 @@ func TestRegisterPageCacheLifecycle(t *testing.T) {
 			pcacheState.openGate.Unlock()
 		}()
 
-		err := RegisterPageCache(noopModule{})
-		assert.True(t, errors.Is(err, ErrPageCacheTooLate))
-
+		if err := RegisterPageCache(noopModule{}); !errors.Is(err, ErrPageCacheTooLate) {
+			t.Errorf("RegisterPageCache after Open err = %v, want ErrPageCacheTooLate", err)
+		}
 	})
 
 	t.Run("TooLateIdempotentForSameValue", func(t *testing.T) {
@@ -182,8 +191,9 @@ func TestRegisterPageCacheLifecycle(t *testing.T) {
 			pcacheState.openGate.Unlock()
 		}()
 
-		assert.NoError(t, RegisterPageCache(m))
-
+		if err := RegisterPageCache(m); err != nil {
+			t.Errorf("re-register same value after Open err = %v, want nil", err)
+		}
 	})
 }
 
@@ -219,7 +229,9 @@ func TestOpenGateConcurrentReaders(t *testing.T) {
 	}
 	wg.Wait()
 
-	require.True(t, pcacheState.opened.Load())
+	if !pcacheState.opened.Load() {
+		t.Fatal("pcacheState.opened is false after withOpenGate fan-out; gate is broken")
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -243,14 +255,17 @@ func TestPCacheIDGen(t *testing.T) {
 	id1 := g.next()
 	id2 := g.next()
 	id3 := g.next()
-	require.False(t, id1 == 0 || id2 == 0 || id3 == 0)
-
-	require.False(t, id1 == id2 || id1 == id3 || id2 == id3)
-
+	if id1 == 0 || id2 == 0 || id3 == 0 {
+		t.Fatalf("next() returned reserved 0 sentinel: %d %d %d", id1, id2, id3)
+	}
+	if id1 == id2 || id1 == id3 || id2 == id3 {
+		t.Fatalf("next() returned duplicate IDs: %d %d %d", id1, id2, id3)
+	}
 	g.reclaim(id2)
 	id4 := g.next()
-	assert.Equal(t, id2, id4)
-
+	if id4 != id2 {
+		t.Errorf("next() after reclaim(id2) = %d, want %d (reclaimed slot)", id4, id2)
+	}
 }
 
 // An end-to-end test that actually opens a sqlite database and routes

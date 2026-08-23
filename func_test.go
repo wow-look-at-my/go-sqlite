@@ -13,8 +13,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"os"
 	"path"
@@ -251,38 +249,46 @@ func init() {
 // functionArgs and the auxiliary copies of TEXT/BLOB values.
 func BenchmarkUDFArgsAllocation(b *testing.B) {
 	db, err := sql.Open(driverName, "file::memory:")
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`)
-	require.Nil(b, err)
+	if _, err := db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`); err != nil {
+		b.Fatal(err)
+	}
 
 	const rows = 1000
 	tx, err := db.Begin()
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	stmt, err := tx.Prepare(`INSERT INTO t (a, b, c) VALUES (?, ?, ?)`)
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	for i := 0; i < rows; i++ {
-		_, err = stmt.Exec(int64(i), "hello", []byte{1, 2, 3})
-		require.Nil(b, err)
-
+		if _, err := stmt.Exec(int64(i), "hello", []byte{1, 2, 3}); err != nil {
+			b.Fatal(err)
+		}
 	}
 	stmt.Close()
-	require.NoError(b, tx.Commit())
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := db.Query(`SELECT issue226_noop(a, b, c) FROM t`)
-		require.Nil(b, err)
-
+		if err != nil {
+			b.Fatal(err)
+		}
 		for r.Next() {
 		}
-		require.NoError(b, r.Err())
-
+		if err := r.Err(); err != nil {
+			b.Fatal(err)
+		}
 		r.Close()
 	}
 }
@@ -290,8 +296,9 @@ func BenchmarkUDFArgsAllocation(b *testing.B) {
 func TestRegisteredFunctions(t *testing.T) {
 	withDB := func(test func(db *sql.DB)) {
 		db, err := sql.Open("sqlite", "file::memory:")
-		require.Nil(t, err)
-
+		if err != nil {
+			t.Fatalf("failed to open database: %v", err)
+		}
 		defer db.Close()
 
 		finalCalled = false
@@ -562,8 +569,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			if !strings.Contains(err.Error(), "string") {
 				tt.Fatal(err)
 			}
-			assert.True(t, finalCalled)
-
+			if !finalCalled {
+				t.Error("xFinal not called")
+			}
 		})
 	})
 
@@ -586,8 +594,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			if b != f {
 				tt.Fatal(b, f)
 			}
-			assert.True(t, finalCalled)
-
+			if !finalCalled {
+				t.Error("xFinal not called")
+			}
 		})
 	})
 
@@ -634,8 +643,9 @@ func TestRegisteredFunctions(t *testing.T) {
 					tt.Fatal(i, g, want[i])
 				}
 			}
-			assert.True(t, finalCalled)
-
+			if !finalCalled {
+				t.Error("xFinal not called")
+			}
 		})
 	})
 
@@ -683,16 +693,18 @@ func TestRegisteredFunctions(t *testing.T) {
 			// Serialize the DB into buf
 			func() {
 				conn, err := db.Conn(context.Background())
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 				defer conn.Close()
 				err = conn.Raw(func(driverConn any) error {
 					var err error
 					buf, err = driverConn.(serializer).Serialize()
 					return err
 				})
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 			}()
 		})
 
@@ -701,14 +713,16 @@ func TestRegisteredFunctions(t *testing.T) {
 			// Deserialize buf into the DB
 			func() {
 				conn, err := db.Conn(context.Background())
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 				defer conn.Close()
 				err = conn.Raw(func(driverConn any) error {
 					return driverConn.(serializer).Deserialize(buf)
 				})
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 			}()
 
 			// Note sqlite3_deserialize will disconnect all connections from
@@ -717,7 +731,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			// not close it because it will be closed by withDB. It's a bit
 			// weird to handle.
 			conn, err := db.Conn(context.Background())
-			require.Nil(t, err)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			// Check the table is complete
 			row := conn.QueryRowContext(context.Background(), "select count(*) from t")
@@ -770,8 +786,9 @@ func TestRegisteredFunctions(t *testing.T) {
 		}
 
 		tmpDir, err := os.MkdirTemp(os.TempDir(), "storetest_")
-		require.Nil(t, err)
-
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer os.RemoveAll(tmpDir)
 		tmpFile := path.Join(tmpDir, "test.db")
 
@@ -783,8 +800,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			// Backup the DB to tmpFile
 			func() {
 				conn, err := db.Conn(context.Background())
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 				defer conn.Close()
 				err = conn.Raw(func(driverConn any) error {
 					bck, err := driverConn.(backuper).NewBackup(tmpFile)
@@ -800,8 +818,9 @@ func TestRegisteredFunctions(t *testing.T) {
 
 					return bck.Finish()
 				})
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 			}()
 		})
 
@@ -809,8 +828,9 @@ func TestRegisteredFunctions(t *testing.T) {
 		withDB(func(db *sql.DB) {
 			func() {
 				conn, err := db.Conn(context.Background())
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 				defer conn.Close()
 				err = conn.Raw(func(driverConn any) error {
 					bck, err := driverConn.(backuper).NewRestore(tmpFile)
@@ -826,8 +846,9 @@ func TestRegisteredFunctions(t *testing.T) {
 
 					return bck.Finish()
 				})
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 			}()
 
 			// Check the table is complete
@@ -848,8 +869,9 @@ func TestRegisteredFunctions(t *testing.T) {
 		}
 
 		tmpDir, err := os.MkdirTemp(os.TempDir(), "storetest_")
-		require.Nil(t, err)
-
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer os.RemoveAll(tmpDir)
 
 		var inMemDB driver.Conn
@@ -862,8 +884,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			// Backup the DB to an in-memory instance
 			func() {
 				conn, err := db.Conn(context.Background())
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 				defer conn.Close()
 				err = conn.Raw(func(driverConn any) error {
 					bck, err := driverConn.(backuper).NewBackup(":memory:")
@@ -881,8 +904,9 @@ func TestRegisteredFunctions(t *testing.T) {
 
 					return err
 				})
-				require.Nil(t, err)
-
+				if err != nil {
+					t.Fatal(err)
+				}
 			}()
 		})
 
@@ -1055,7 +1079,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			}
 
 			conn, err := db.Conn(context.Background())
-			require.Nil(t, err)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -1073,7 +1099,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			}
 
 			conn, err := db.Conn(context.Background())
-			require.Nil(t, err)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			for try := 0; try < 1000; try++ {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -1116,8 +1144,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			)
 
 			conn, err := db.Conn(tt.Context())
-			require.Nil(t, err)
-
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer conn.Close()
 
 			var wg sync.WaitGroup
@@ -1125,8 +1154,10 @@ func TestRegisteredFunctions(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				rows, err := conn.QueryContext(ctx, "select test_sleep()")
-				assert.NotNil(t, err)
-
+				if err == nil {
+					t.Error("expected error")
+					rows.Close()
+				}
 				return
 			}()
 			time.Sleep(100 * time.Millisecond)
@@ -1147,7 +1178,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			}
 
 			conn, err := db.Conn(context.Background())
-			require.Nil(t, err)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -1167,7 +1200,9 @@ func TestRegisteredFunctions(t *testing.T) {
 			}
 
 			conn, err := db.Conn(context.Background())
-			require.Nil(t, err)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			for try := 0; try < 1000; try++ {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -1199,38 +1234,46 @@ func TestRegisteredFunctions(t *testing.T) {
 // bodies into Go-owned memory, which is what VolatileArgs eliminates.
 func BenchmarkUDFArgsAllocationVolatile(b *testing.B) {
 	db, err := sql.Open(driverName, "file::memory:")
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`)
-	require.Nil(b, err)
+	if _, err := db.Exec(`CREATE TABLE t (a INTEGER, b TEXT, c BLOB)`); err != nil {
+		b.Fatal(err)
+	}
 
 	const rows = 1000
 	tx, err := db.Begin()
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	stmt, err := tx.Prepare(`INSERT INTO t (a, b, c) VALUES (?, ?, ?)`)
-	require.Nil(b, err)
-
+	if err != nil {
+		b.Fatal(err)
+	}
 	for i := 0; i < rows; i++ {
-		_, err = stmt.Exec(int64(i), "hello", []byte{1, 2, 3})
-		require.Nil(b, err)
-
+		if _, err := stmt.Exec(int64(i), "hello", []byte{1, 2, 3}); err != nil {
+			b.Fatal(err)
+		}
 	}
 	stmt.Close()
-	require.NoError(b, tx.Commit())
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := db.Query(`SELECT issue226_noop_volatile(a, b, c) FROM t`)
-		require.Nil(b, err)
-
+		if err != nil {
+			b.Fatal(err)
+		}
 		for r.Next() {
 		}
-		require.NoError(b, r.Err())
-
+		if err := r.Err(); err != nil {
+			b.Fatal(err)
+		}
 		r.Close()
 	}
 }
@@ -1263,31 +1306,37 @@ func TestVolatileArgsScalar(t *testing.T) {
 	})
 
 	db, err := sql.Open(driverName, "file::memory:")
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`)
-	require.Nil(t, err)
-
-	_, err = db.Exec(`INSERT INTO t (s, b) VALUES ('alpha', X'01020304'), ('beta', X'AABB'), ('', NULL)`)
-	require.Nil(t, err)
+	if _, err := db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (s, b) VALUES ('alpha', X'01020304'), ('beta', X'AABB'), ('', NULL)`); err != nil {
+		t.Fatal(err)
+	}
 
 	rows, err := db.Query(`SELECT vol_recorder_scalar(s, COALESCE(b, X'')) FROM t ORDER BY rowid`)
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	for rows.Next() {
 	}
-	require.NoError(t, rows.Err())
-
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	rows.Close()
 
 	wantStrings := []string{"alpha", "beta", ""}
-	assert.Equal(t, gotStrings, wantStrings)
-
+	if !reflect.DeepEqual(gotStrings, wantStrings) {
+		t.Errorf("volatile scalar TEXT: got %q, want %q", gotStrings, wantStrings)
+	}
 	wantBlobs := [][]byte{{1, 2, 3, 4}, {0xAA, 0xBB}, nil}
-	assert.Equal(t, gotBlobs, wantBlobs)
-
+	if !reflect.DeepEqual(gotBlobs, wantBlobs) {
+		t.Errorf("volatile scalar BLOB: got %v, want %v", gotBlobs, wantBlobs)
+	}
 }
 
 // volatileAggregate is an aggregate function used by TestVolatileArgsAggregate.
@@ -1327,20 +1376,24 @@ func TestVolatileArgsAggregate(t *testing.T) {
 	})
 
 	db, err := sql.Open(driverName, "file::memory:")
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 
-	_, err = db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`)
-	require.Nil(t, err)
-
-	_, err = db.Exec(`INSERT INTO t (s, b) VALUES ('one', X'01'), ('two', X'02'), ('three', X'03')`)
-	require.Nil(t, err)
+	if _, err := db.Exec(`CREATE TABLE t (s TEXT, b BLOB)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO t (s, b) VALUES ('one', X'01'), ('two', X'02'), ('three', X'03')`); err != nil {
+		t.Fatal(err)
+	}
 
 	var got string
-	require.NoError(t, db.QueryRow(`SELECT vol_recorder_agg(s, b) FROM (SELECT s, b FROM t ORDER BY rowid)`).Scan(&got))
-
+	if err := db.QueryRow(`SELECT vol_recorder_agg(s, b) FROM (SELECT s, b FROM t ORDER BY rowid)`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
 	want := `strs=["one" "two" "three"] blobs=[[1] [2] [3]]`
-	assert.Equal(t, want, got)
-
+	if got != want {
+		t.Errorf("volatile aggregate result:\n got %s\nwant %s", got, want)
+	}
 }

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"modernc.org/libc"
 )
 
@@ -29,8 +28,9 @@ func TestOpenV2FailureResourceLeak(t *testing.T) {
 			return
 		}
 		err = db.Ping()
-		require.NotNil(t, err)
-
+		if err == nil {
+			t.Fatal("expected Ping to fail for invalid path")
+		}
 		db.Close()
 	}
 
@@ -50,8 +50,9 @@ func TestOpenV2FailureResourceLeak(t *testing.T) {
 
 	leaked := after.Allocs - before.Allocs
 	t.Logf("allocs before=%d after=%d delta=%d", before.Allocs, after.Allocs, leaked)
-	require.LessOrEqual(t, leaked, 100)
-
+	if leaked > 100 {
+		t.Fatalf("memory leak: net alloc count grew by %d over 1000 failed opens", leaked)
+	}
 }
 
 // TestMultiStmtNopAllocsLeak exercises a leak in the multi-statement query
@@ -68,28 +69,33 @@ func TestOpenV2FailureResourceLeak(t *testing.T) {
 //   - SELECT ?         → bind allocs=[ptr_B] (ptr_A leaked), SQLITE_ROW
 func TestMultiStmtNopAllocsLeak(t *testing.T) {
 	db, err := sql.Open("sqlite", "file::memory:")
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer conn.Close()
 
-	_, err = conn.ExecContext(ctx, "CREATE TABLE t(v TEXT)")
-	require.Nil(t, err)
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE t(v TEXT)"); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(iters int) {
 		for i := range iters {
 			val := fmt.Sprintf("iter-%04d-%s", i, strings.Repeat("x", 1024))
 			rows, err := conn.QueryContext(ctx, "SELECT 1; UPDATE t SET v = ? WHERE 0; SELECT ?", val)
-			require.Nil(t, err)
-
-			require.NoError(t, rows.Close())
-
+			if err != nil {
+				t.Fatalf("(%d) query: %v", i, err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatalf("(%d) close: %v", i, err)
+			}
 		}
 	}
 
@@ -102,8 +108,9 @@ func TestMultiStmtNopAllocsLeak(t *testing.T) {
 
 	leaked := after.Allocs - before.Allocs
 	t.Logf("allocs before=%d after=%d delta=%d", before.Allocs, after.Allocs, leaked)
-	require.LessOrEqual(t, leaked, 100)
-
+	if leaked > 100 {
+		t.Fatalf("memory leak: net alloc count grew by %d over 1000 iterations", leaked)
+	}
 }
 
 // TestMultiStmtErrorAllocsLeak exercises a leak on the step-error path in the
@@ -119,30 +126,34 @@ func TestMultiStmtNopAllocsLeak(t *testing.T) {
 //   - INSERT INTO t VALUES(?) → bind allocs=[ptr_A], step error → allocs leaked
 func TestMultiStmtErrorAllocsLeak(t *testing.T) {
 	db, err := sql.Open("sqlite", "file::memory:")
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer conn.Close()
 
-	_, err = conn.ExecContext(ctx, "CREATE TABLE t(v TEXT UNIQUE)")
-	require.Nil(t, err)
-
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE t(v TEXT UNIQUE)"); err != nil {
+		t.Fatal(err)
+	}
 	// Seed the table with a value that we'll collide with.
 	collideVal := fmt.Sprintf("collide-%s", strings.Repeat("x", 1024))
-	_, err = conn.ExecContext(ctx, "INSERT INTO t VALUES(?)", collideVal)
-	require.Nil(t, err)
+	if _, err := conn.ExecContext(ctx, "INSERT INTO t VALUES(?)", collideVal); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(iters int) {
 		for i := range iters {
 			_, err := conn.QueryContext(ctx, "INSERT INTO t VALUES(?); SELECT 1", collideVal)
-			require.NotNil(t, err)
-
+			if err == nil {
+				t.Fatalf("(%d) expected UNIQUE constraint error", i)
+			}
 		}
 	}
 
@@ -155,8 +166,9 @@ func TestMultiStmtErrorAllocsLeak(t *testing.T) {
 
 	leaked := after.Allocs - before.Allocs
 	t.Logf("allocs before=%d after=%d delta=%d", before.Allocs, after.Allocs, leaked)
-	require.LessOrEqual(t, leaked, 100)
-
+	if leaked > 100 {
+		t.Fatalf("memory leak: net alloc count grew by %d over 1000 iterations", leaked)
+	}
 }
 
 // TestMultiStmtOrphanedRowsOnError exercises a resource leak when a later
@@ -172,29 +184,33 @@ func TestMultiStmtErrorAllocsLeak(t *testing.T) {
 //   - INSERT   → step error (UNIQUE violation) → return nil, err → r orphaned
 func TestMultiStmtOrphanedRowsOnError(t *testing.T) {
 	db, err := sql.Open("sqlite", "file::memory:")
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
-	require.Nil(t, err)
-
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer conn.Close()
 
-	_, err = conn.ExecContext(ctx, "CREATE TABLE t(v TEXT UNIQUE)")
-	require.Nil(t, err)
-
+	if _, err := conn.ExecContext(ctx, "CREATE TABLE t(v TEXT UNIQUE)"); err != nil {
+		t.Fatal(err)
+	}
 	collideVal := fmt.Sprintf("collide-%s", strings.Repeat("x", 1024))
-	_, err = conn.ExecContext(ctx, "INSERT INTO t VALUES(?)", collideVal)
-	require.Nil(t, err)
+	if _, err := conn.ExecContext(ctx, "INSERT INTO t VALUES(?)", collideVal); err != nil {
+		t.Fatal(err)
+	}
 
 	run := func(iters int) {
 		for i := range iters {
 			_, err := conn.QueryContext(ctx, "SELECT ?; INSERT INTO t VALUES(?)", collideVal)
-			require.NotNil(t, err)
-
+			if err == nil {
+				t.Fatalf("(%d) expected UNIQUE constraint error", i)
+			}
 		}
 	}
 
@@ -207,6 +223,7 @@ func TestMultiStmtOrphanedRowsOnError(t *testing.T) {
 
 	leaked := after.Allocs - before.Allocs
 	t.Logf("allocs before=%d after=%d delta=%d", before.Allocs, after.Allocs, leaked)
-	require.LessOrEqual(t, leaked, 100)
-
+	if leaked > 100 {
+		t.Fatalf("memory leak: net alloc count grew by %d over 1000 iterations", leaked)
+	}
 }
