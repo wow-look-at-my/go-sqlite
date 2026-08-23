@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 	"modernc.org/libc"
 	"modernc.org/libc/sys/types"
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 // ErrPageCacheTooLate is returned by RegisterPageCache when a SQLite

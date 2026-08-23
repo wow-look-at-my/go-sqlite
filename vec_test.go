@@ -7,14 +7,14 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	_ "github.com/wow-look-at-my/go-sqlite/vec"
 )
 
 func TestVec(t *testing.T) {
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
 	_, err = db.Exec(`
@@ -31,9 +31,7 @@ insert into vec_examples(rowid, sample_embedding)
     (3, '[0.716, -0.927, 0.134, 0.052, -0.669, 0.793, -0.634, -0.162]'),
     (4, '[-0.710, 0.330, 0.656, 0.041, -0.990, 0.726, 0.385, -0.958]');
 `)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 
 	rs, err := db.Query(`
 -- KNN style query
@@ -45,9 +43,8 @@ where sample_embedding match '[0.890, 0.544, 0.825, 0.961, 0.358, 0.0196, 0.521,
 order by distance
 limit 2;
 `)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer rs.Close()
 
 	var (
@@ -60,21 +57,16 @@ limit 2;
 			rowid    string
 			distance float64
 		)
-		if err := rs.Scan(&rowid, &distance); err != nil {
-			t.Fatal(err)
-		}
-		if rowid != rowids[count] {
-			t.Fatalf("unexpected rowid: got %s, want %s", rowid, rowids[count])
-		}
-		if math.Abs(distance-distances[count]) > 1e-6 {
-			t.Fatalf("unexpected distance: got %f, want %f", distance, distances[count])
-		}
+		require.NoError(t, rs.Scan(&rowid, &distance))
+
+		require.Equal(t, rowids[count], rowid)
+
+		require.LessOrEqual(t, math.Abs(distance-distances[count]), 1e-6)
+
 		count++
 	}
-	if err := rs.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if count != len(rowids) {
-		t.Fatalf("unexpected number of rows: got %d, want %d", count, len(rowids))
-	}
+	require.NoError(t, rs.Err())
+
+	require.Equal(t, len(rowids), count)
+
 }

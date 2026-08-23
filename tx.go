@@ -8,8 +8,8 @@ import (
 	"context"
 	"database/sql/driver"
 
-	"modernc.org/libc"
 	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	"modernc.org/libc"
 )
 
 type tx struct {

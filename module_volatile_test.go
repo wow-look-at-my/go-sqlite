@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
@@ -263,19 +265,16 @@ func init() {
 // in functionArgs.
 func benchVTabFilterArgs(b *testing.B, moduleName string) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(fmt.Sprintf(`CREATE VIRTUAL TABLE vt USING %s()`, moduleName)); err != nil {
-		b.Fatalf("create virtual table: %v", err)
-	}
+	_, err = db.Exec(fmt.Sprintf(`CREATE VIRTUAL TABLE vt USING %s()`, moduleName))
+	require.Nil(b, err)
 
 	stmt, err := db.Prepare(`SELECT * FROM vt WHERE s = ? AND b = ?`)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer stmt.Close()
 
 	text := "hello"
@@ -285,14 +284,12 @@ func benchVTabFilterArgs(b *testing.B, moduleName string) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := stmt.Query(text, blob)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.Nil(b, err)
+
 		for r.Next() {
 		}
-		if err := r.Err(); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, r.Err())
+
 		r.Close()
 	}
 }
@@ -316,19 +313,16 @@ func BenchmarkVTabFilterArgsVolatile(b *testing.B) {
 // column values.
 func benchVTabUpdateArgs(b *testing.B, moduleName string) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(fmt.Sprintf(`CREATE VIRTUAL TABLE vt USING %s()`, moduleName)); err != nil {
-		b.Fatalf("create virtual table: %v", err)
-	}
+	_, err = db.Exec(fmt.Sprintf(`CREATE VIRTUAL TABLE vt USING %s()`, moduleName))
+	require.Nil(b, err)
 
 	stmt, err := db.Prepare(`INSERT INTO vt(s, b) VALUES(?, ?)`)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer stmt.Close()
 
 	text := "hello"
@@ -337,9 +331,9 @@ func benchVTabUpdateArgs(b *testing.B, moduleName string) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := stmt.Exec(text, blob); err != nil {
-			b.Fatal(err)
-		}
+		_, err = stmt.Exec(text, blob)
+		require.Nil(b, err)
+
 	}
 }
 
@@ -381,19 +375,15 @@ func TestVTabVolatileFilter(t *testing.T) {
 			mu.Unlock()
 		},
 	}
-	if err := vtab.RegisterModule(nil, "volfilter_recorder", mod); err != nil {
-		t.Fatalf("RegisterModule: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(nil, "volfilter_recorder", mod))
 
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE vt USING volfilter_recorder()`); err != nil {
-		t.Fatalf("create virtual table: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE vt USING volfilter_recorder()`)
+	require.Nil(t, err)
 
 	cases := []struct {
 		s string
@@ -405,25 +395,21 @@ func TestVTabVolatileFilter(t *testing.T) {
 	}
 	for _, c := range cases {
 		r, err := db.Query(`SELECT * FROM vt WHERE s = ? AND b = ?`, c.s, c.b)
-		if err != nil {
-			t.Fatalf("query %q: %v", c.s, err)
-		}
+		require.Nil(t, err)
+
 		for r.Next() {
 		}
-		if err := r.Err(); err != nil {
-			t.Fatalf("rows.Err: %v", err)
-		}
+		require.NoError(t, r.Err())
+
 		r.Close()
 	}
 
 	wantStrings := []string{"alpha", "beta", ""}
-	if !reflect.DeepEqual(gotStrings, wantStrings) {
-		t.Errorf("volatile Filter TEXT: got %q, want %q", gotStrings, wantStrings)
-	}
+	assert.Equal(t, gotStrings, wantStrings)
+
 	wantBlobs := [][]byte{{1, 2, 3, 4}, {0xAA, 0xBB}, {}}
-	if !reflect.DeepEqual(gotBlobs, wantBlobs) {
-		t.Errorf("volatile Filter BLOB: got %v, want %v", gotBlobs, wantBlobs)
-	}
+	assert.Equal(t, gotBlobs, wantBlobs)
+
 }
 
 // TestVTabVolatileUpdate verifies that a vtab module opting into
@@ -462,45 +448,35 @@ func TestVTabVolatileUpdate(t *testing.T) {
 			mu.Unlock()
 		},
 	}
-	if err := vtab.RegisterModule(nil, "volupdate_recorder", mod); err != nil {
-		t.Fatalf("RegisterModule: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(nil, "volupdate_recorder", mod))
 
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE vt USING volupdate_recorder()`); err != nil {
-		t.Fatalf("create virtual table: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE vt USING volupdate_recorder()`)
+	require.Nil(t, err)
 
 	// Insert rows with TEXT + BLOB.
-	if _, err := db.Exec(`INSERT INTO vt(s, b) VALUES('alpha', X'01020304'), ('beta', X'AABB'), ('', X'')`); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	_, err = db.Exec(`INSERT INTO vt(s, b) VALUES('alpha', X'01020304'), ('beta', X'AABB'), ('', X'')`)
+	require.Nil(t, err)
 
 	wantInsertStrs := []string{"alpha", "beta", ""}
-	if !reflect.DeepEqual(insertStrs, wantInsertStrs) {
-		t.Errorf("volatile Insert TEXT: got %q, want %q", insertStrs, wantInsertStrs)
-	}
+	assert.Equal(t, insertStrs, wantInsertStrs)
+
 	wantInsertBlobs := [][]byte{{1, 2, 3, 4}, {0xAA, 0xBB}, {}}
-	if !reflect.DeepEqual(insertBlobs, wantInsertBlobs) {
-		t.Errorf("volatile Insert BLOB: got %v, want %v", insertBlobs, wantInsertBlobs)
-	}
+	assert.Equal(t, insertBlobs, wantInsertBlobs)
 
 	// Update one row by rowid so xUpdate dispatches to Updater.Update with
 	// non-NULL oldRowid.
-	if _, err := db.Exec(`UPDATE vt SET s = 'gamma', b = X'CCDD' WHERE rowid = 1`); err != nil {
-		t.Fatalf("update: %v", err)
-	}
+	_, err = db.Exec(`UPDATE vt SET s = 'gamma', b = X'CCDD' WHERE rowid = 1`)
+	require.Nil(t, err)
+
 	wantUpdateStrs := []string{"gamma"}
-	if !reflect.DeepEqual(updateStrs, wantUpdateStrs) {
-		t.Errorf("volatile Update TEXT: got %q, want %q", updateStrs, wantUpdateStrs)
-	}
+	assert.Equal(t, updateStrs, wantUpdateStrs)
+
 	wantUpdateBlobs := [][]byte{{0xCC, 0xDD}}
-	if !reflect.DeepEqual(updateBlobs, wantUpdateBlobs) {
-		t.Errorf("volatile Update BLOB: got %v, want %v", updateBlobs, wantUpdateBlobs)
-	}
+	assert.Equal(t, updateBlobs, wantUpdateBlobs)
+
 }

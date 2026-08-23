@@ -31,11 +31,11 @@ import (
 	"time"
 
 	"github.com/google/pprof/profile"
+	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	"github.com/wow-look-at-my/go-sqlite/vfs"
 	util "modernc.org/fileutil/ccgo"
 	"modernc.org/libc"
 	"modernc.org/mathutil"
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
-	"github.com/wow-look-at-my/go-sqlite/vfs"
 )
 
 var (

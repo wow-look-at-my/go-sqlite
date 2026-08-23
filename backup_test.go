@@ -6,6 +6,8 @@ package sqlite // import "github.com/wow-look-at-my/go-sqlite"
 
 import (
 	"context"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,33 +25,26 @@ import (
 func TestBackupCommitClosesConnOnError(t *testing.T) {
 	// Create source in-memory database with some data.
 	srcConn, err := newConn(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer srcConn.Close()
 
 	// Populate source so there is at least one page to copy.
-	if err := execConn(srcConn, "CREATE TABLE t(x)"); err != nil {
-		t.Fatal(err)
-	}
-	if err := execConn(srcConn, "INSERT INTO t VALUES('hello')"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, execConn(srcConn, "CREATE TABLE t(x)"))
+
+	require.NoError(t, execConn(srcConn, "INSERT INTO t VALUES('hello')"))
 
 	// Create a temp directory for the destination database.
 	tmpDir, err := os.MkdirTemp("", "backup_commit_test_")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer os.RemoveAll(tmpDir)
 
 	dstPath := filepath.Join(tmpDir, "dst.db")
 
 	// Create the backup object (this opens the destination connection).
 	bck, err := srcConn.NewBackup(dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 
 	// Make the destination directory read-only so that writes to the
 	// destination database fail. This causes backup_step to return an
@@ -82,15 +77,12 @@ func TestBackupCommitClosesConnOnError(t *testing.T) {
 		t.Skip("could not provoke backup error on this platform; skipping")
 	}
 
-	if conn != nil {
-		t.Fatal("Commit() must return nil conn on error")
-	}
+	require.Nil(t, conn)
 
 	// The critical assertion: the destination connection must be closed.
 	// After Close(), db is set to 0.
-	if bck.dstConn.db != 0 {
-		t.Fatal("Commit() did not close the destination connection on error")
-	}
+	require.Equal(t, 0, bck.dstConn.db)
+
 }
 
 // TestBackupProgress verifies that Remaining and PageCount expose the
@@ -106,81 +98,66 @@ func TestBackupCommitClosesConnOnError(t *testing.T) {
 //     source page count.
 func TestBackupProgress(t *testing.T) {
 	srcConn, err := newConn(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer srcConn.Close()
 
-	if err := execConn(srcConn, "CREATE TABLE t(x INTEGER, y TEXT)"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, execConn(srcConn, "CREATE TABLE t(x INTEGER, y TEXT)"))
+
 	// Insert enough rows that the source database spans multiple pages so
 	// the partial-Step phase is observable.
 	for i := 0; i < 200; i++ {
-		if err := execConn(srcConn, "INSERT INTO t(x, y) VALUES(1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')"); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, execConn(srcConn, "INSERT INTO t(x, y) VALUES(1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')"))
+
 	}
 
 	tmpDir, err := os.MkdirTemp("", "backup_progress_test_")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer os.RemoveAll(tmpDir)
 
 	dstPath := filepath.Join(tmpDir, "dst.db")
 
 	bck, err := srcConn.NewBackup(dstPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer bck.Finish()
 
 	// Phase 1: before any Step, both counters are 0 per the SQLite docs.
-	if got := bck.Remaining(); got != 0 {
-		t.Errorf("Remaining before Step: got %d, want 0", got)
-	}
-	if got := bck.PageCount(); got != 0 {
-		t.Errorf("PageCount before Step: got %d, want 0", got)
-	}
+	got := bck.Remaining()
+	assert.Equal(t, 0, got)
+
+	got := bck.PageCount()
+	assert.Equal(t, 0, got)
 
 	// Phase 2: copy one page so PageCount becomes known and Remaining is
 	// strictly positive (the source spans many pages).
 	more, err := bck.Step(1)
-	if err != nil {
-		t.Fatalf("first Step: %v", err)
-	}
-	if !more {
-		t.Fatal("first Step returned DONE on a multi-page source; test setup is too small")
-	}
+	require.Nil(t, err)
+
+	require.True(t, more)
 
 	pages := bck.PageCount()
-	if pages <= 1 {
-		t.Fatalf("PageCount after first Step: got %d, want > 1", pages)
-	}
+	require.Greater(t, pages, 1)
+
 	remaining := bck.Remaining()
-	if remaining <= 0 {
-		t.Errorf("Remaining after copying 1 page: got %d, want > 0", remaining)
-	}
-	if remaining != pages-1 {
-		t.Errorf("Remaining after copying 1 page: got %d, want %d (PageCount - 1)", remaining, pages-1)
-	}
+	assert.Greater(t, remaining, 0)
+
+	assert.Equal(t, pages-1, remaining)
 
 	// Phase 3: finish the copy and confirm Remaining drops to 0 while
 	// PageCount keeps reporting the source page count.
 	more, err = bck.Step(-1)
-	if err != nil {
-		t.Fatalf("final Step: %v", err)
-	}
-	if more {
-		t.Fatal("final Step with n=-1 returned more=true; expected DONE")
-	}
-	if got := bck.Remaining(); got != 0 {
-		t.Errorf("Remaining after DONE: got %d, want 0", got)
-	}
-	if got := bck.PageCount(); got != pages {
-		t.Errorf("PageCount after DONE: got %d, want %d (unchanged from mid-backup)", got, pages)
-	}
+	require.Nil(t, err)
+
+	require.False(t, more)
+
+	got := bck.Remaining()
+	assert.Equal(t, 0, got)
+
+	got := bck.PageCount()
+	assert.Equal(t, pages, got)
+
 }
 
 // execConn is a test helper that executes a SQL statement on a raw conn.

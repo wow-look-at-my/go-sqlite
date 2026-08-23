@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
@@ -351,52 +353,40 @@ func (c *matchCursorX) Close() error {
 func TestDummyModuleVtab(t *testing.T) {
 	// Open an in-memory database using this driver.
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
 	// Register the dummy module.
-	if err := vtab.RegisterModule(db, "dummy", &dummyModule{}); err != nil {
-		t.Fatalf("vtab.RegisterModule failed: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(db, "dummy", &dummyModule{}))
 
 	// Create a virtual table using the dummy module.
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE vt USING dummy(value)`); err != nil {
-		t.Fatalf("CREATE VIRTUAL TABLE vt USING dummy failed: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE vt USING dummy(value)`)
+	require.Nil(t, err)
 
 	// Query the virtual table with a simple equality constraint.
 	rows, err := db.Query(`SELECT rowid, value FROM vt WHERE value = 'alpha' ORDER BY rowid`)
-	if err != nil {
-		t.Fatalf("SELECT from vt failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	var got []string
 	for rows.Next() {
 		var rowid int64
 		var value string
-		if err := rows.Scan(&rowid, &value); err != nil {
-			t.Fatalf("scan failed: %v", err)
-		}
+		require.NoError(t, rows.Scan(&rowid, &value))
+
 		got = append(got, value)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
+	require.NoError(t, rows.Err())
 
-	if len(got) != 1 {
-		t.Fatalf("expected 1 row, got %d (%v)", len(got), got)
-	}
-	if got[0] != "alpha" {
-		t.Fatalf("unexpected value from vt: %v (want [alpha])", got)
-	}
+	require.Equal(t, 1, len(got))
+
+	require.Equal(t, "alpha", got[0])
 
 	// Verify that BestIndex saw a usable equality constraint on column 0.
-	if lastIndexInfo == nil {
-		t.Fatalf("expected BestIndex to be called and lastIndexInfo to be set")
-	}
+	require.NotNil(t, lastIndexInfo)
+
 	found := false
 	for _, c := range lastIndexInfo.Constraints {
 		if c.Column == 0 && c.Op == vtab.OpEQ && c.Usable {
@@ -404,14 +394,11 @@ func TestDummyModuleVtab(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("BestIndex did not observe a usable EQ constraint on column 0; got %+v", lastIndexInfo.Constraints)
-	}
+	require.True(t, found)
 
 	// Verify ColUsed indicates column 0 is referenced.
-	if lastIndexInfo.ColUsed == 0 || (lastIndexInfo.ColUsed&1) == 0 {
-		t.Fatalf("expected ColUsed to include column 0; got %b", lastIndexInfo.ColUsed)
-	}
+	require.False(t, lastIndexInfo.ColUsed == 0 || (lastIndexInfo.ColUsed&1) == 0)
+
 }
 
 // argIndexModule exercises Constraint.ArgIndex and ensures that the arguments
@@ -524,172 +511,137 @@ func TestVtabConstraintArgIndex(t *testing.T) {
 	argIndexFilterVals = nil
 	argIndexFilterCalls = 0
 
-	if err := vtab.RegisterModule(nil, "argtest", &argIndexModule{}); err != nil {
-		t.Fatalf("vtab.RegisterModule(argtest) failed: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(nil, "argtest", &argIndexModule{}))
+
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE at USING argtest(c1, c2)`); err != nil {
-		t.Fatalf("CREATE VIRTUAL TABLE at USING argtest failed: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE at USING argtest(c1, c2)`)
+	require.Nil(t, err)
 
 	rows, err := db.Query(`SELECT rowid FROM at WHERE c1 = ? AND c2 = ?`, 10, 20)
-	if err != nil {
-		t.Fatalf("SELECT from at failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	for rows.Next() {
 		var rowid int64
-		if err := rows.Scan(&rowid); err != nil {
-			t.Fatalf("scan failed: %v", err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
+		require.NoError(t, rows.Scan(&rowid))
 
-	if argIndexFilterCalls == 0 {
-		t.Fatalf("expected Filter to be called at least once")
 	}
-	if len(argIndexFilterVals) != 2 {
-		t.Fatalf("expected 2 argv values in Filter, got %d (%v)", len(argIndexFilterVals), argIndexFilterVals)
-	}
+	require.NoError(t, rows.Err())
+
+	require.NotEqual(t, 0, argIndexFilterCalls)
+
+	require.Equal(t, 2, len(argIndexFilterVals))
+
 	v1, ok1 := argIndexFilterVals[0].(int64)
 	v2, ok2 := argIndexFilterVals[1].(int64)
-	if !ok1 || !ok2 {
-		t.Fatalf("unexpected argv types: %T, %T", argIndexFilterVals[0], argIndexFilterVals[1])
-	}
-	if v1 != 10 || v2 != 20 {
-		t.Fatalf("unexpected argv values in Filter: got (%v, %v), want (10, 20)", v1, v2)
-	}
+	require.False(t, !ok1 || !ok2)
+
+	require.False(t, v1 != 10 || v2 != 20)
+
 }
 
 // TestVtabOmitConstraintEffect verifies that setting Constraint.Omit causes
 // SQLite to not re-evaluate the parent constraint and relies on the vtab to
 // enforce it.
 func TestVtabOmitConstraintEffect(t *testing.T) {
-	if err := vtab.RegisterModule(nil, "omit_off", &omitModuleX{omit: false}); err != nil {
-		t.Fatalf("RegisterModule omit_off: %v", err)
-	}
-	if err := vtab.RegisterModule(nil, "omit_on", &omitModuleX{omit: true}); err != nil {
-		t.Fatalf("RegisterModule omit_on: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(nil, "omit_off", &omitModuleX{omit: false}))
+
+	require.NoError(t, vtab.RegisterModule(nil, "omit_on", &omitModuleX{omit: true}))
+
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE vt_off USING omit_off(val)`); err != nil {
-		t.Fatalf("create vt_off: %v", err)
-	}
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE vt_on USING omit_on(val)`); err != nil {
-		t.Fatalf("create vt_on: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE vt_off USING omit_off(val)`)
+	require.Nil(t, err)
+
+	_, err = db.Exec(`CREATE VIRTUAL TABLE vt_on USING omit_on(val)`)
+	require.Nil(t, err)
 
 	// omit=false: SQLite should re-check WHERE and filter down to 1 row.
 	rows, err := db.Query(`SELECT val FROM vt_off WHERE val = 'alpha'`)
-	if err != nil {
-		t.Fatalf("query vt_off: %v", err)
-	}
+	require.Nil(t, err)
+
 	var got []string
 	for rows.Next() {
 		var v string
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
+		require.NoError(t, rows.Scan(&v))
+
 		got = append(got, v)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
+	require.NoError(t, rows.Err())
+
 	rows.Close()
-	if len(got) != 1 || got[0] != "alpha" {
-		t.Fatalf("omit=false expected [alpha], got %v", got)
-	}
+	require.False(t, len(got) != 1 || got[0] != "alpha")
 
 	// omit=true: SQLite should not re-check WHERE; both rows would pass unless the vtab filters.
 	rows, err = db.Query(`SELECT val FROM vt_on WHERE val = 'alpha'`)
-	if err != nil {
-		t.Fatalf("query vt_on: %v", err)
-	}
+	require.Nil(t, err)
+
 	got = got[:0]
 	for rows.Next() {
 		var v string
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
+		require.NoError(t, rows.Scan(&v))
+
 		got = append(got, v)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
+	require.NoError(t, rows.Err())
+
 	rows.Close()
-	if len(got) != 2 {
-		t.Fatalf("omit=true expected 2 rows (no re-check), got %d %v", len(got), got)
-	}
+	require.Equal(t, 2, len(got))
+
 }
 
 // TestVtabMatchConstraint ensures MATCH constraints work when enabled.
 func TestVtabMatchConstraint(t *testing.T) {
-	if err := vtab.RegisterModule(nil, "matchx", &matchModuleX{}); err != nil {
-		t.Fatalf("vtab.RegisterModule(matchx) failed: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(nil, "matchx", &matchModuleX{}))
+
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("sql.Open failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE mt USING matchx(val)`); err != nil {
-		t.Fatalf("CREATE VIRTUAL TABLE mt USING matchx failed: %v", err)
-	}
+	_, err = db.Exec(`CREATE VIRTUAL TABLE mt USING matchx(val)`)
+	require.Nil(t, err)
 
 	rows, err := db.Query(`SELECT val FROM mt WHERE val MATCH 'al' ORDER BY val`)
-	if err != nil {
-		t.Fatalf("SELECT from mt failed: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	var got []string
 	for rows.Next() {
 		var v string
-		if err := rows.Scan(&v); err != nil {
-			t.Fatalf("scan failed: %v", err)
-		}
+		require.NoError(t, rows.Scan(&v))
+
 		got = append(got, v)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows.Err: %v", err)
-	}
-	if len(got) != 2 || got[0] != "alpha" || got[1] != "alpine" {
-		t.Fatalf("unexpected MATCH results: %v", got)
-	}
+	require.NoError(t, rows.Err())
+
+	require.False(t, len(got) != 2 || got[0] != "alpha" || got[1] != "alpine")
+
 }
 
 // TestVtabConstraintOperators verifies that at least one non-EQ operator is
 // faithfully mapped (IS NULL) to the Go ConstraintOp.
 func TestVtabConstraintOperators(t *testing.T) {
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if err := vtab.RegisterModule(db, "ops", &opsModuleX{}); err != nil {
-		t.Fatalf("register ops: %v", err)
-	}
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE ovt USING ops(c1)`); err != nil {
-		t.Fatalf("create ovt: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(db, "ops", &opsModuleX{}))
+
+	_, err = db.Exec(`CREATE VIRTUAL TABLE ovt USING ops(c1)`)
+	require.Nil(t, err)
 
 	rows, err := db.Query(`SELECT rowid FROM ovt WHERE c1 IS NULL`)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
+	require.Nil(t, err)
+
 	rows.Close()
 	// Expect to see an ISNULL op recorded.
 	found := false
@@ -699,15 +651,12 @@ func TestVtabConstraintOperators(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected to see OpISNULL in constraints, got %v", seenOpsOps)
-	}
+	require.True(t, found)
 
 	// Also verify LIKE maps through when present.
 	rows, err = db.Query(`SELECT rowid FROM ovt WHERE c1 LIKE 'a%'`)
-	if err != nil {
-		t.Fatalf("query like: %v", err)
-	}
+	require.Nil(t, err)
+
 	rows.Close()
 	found = false
 	for _, op := range seenOpsOps {
@@ -716,15 +665,12 @@ func TestVtabConstraintOperators(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected to see OpLIKE in constraints, got %v", seenOpsOps)
-	}
+	require.True(t, found)
 
 	// And verify GLOB maps through when present.
 	rows, err = db.Query(`SELECT rowid FROM ovt WHERE c1 GLOB 'a*'`)
-	if err != nil {
-		t.Fatalf("query glob: %v", err)
-	}
+	require.Nil(t, err)
+
 	rows.Close()
 	found = false
 	for _, op := range seenOpsOps {
@@ -733,9 +679,8 @@ func TestVtabConstraintOperators(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected to see OpGLOB in constraints, got %v", seenOpsOps)
-	}
+	require.True(t, found)
+
 }
 
 // overflowIdxModule sets an out-of-range IdxNum to verify the driver rejects
@@ -816,50 +761,42 @@ func (c *badcolCursor) Close() error          { return nil }
 
 func TestVtabIdxNumOverflowError(t *testing.T) {
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if err := vtab.RegisterModule(db, "overflow_idx", &overflowIdxModule{}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE ovt USING overflow_idx(val)`); err != nil {
-		t.Fatalf("create vt: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(db, "overflow_idx", &overflowIdxModule{}))
+
+	_, err = db.Exec(`CREATE VIRTUAL TABLE ovt USING overflow_idx(val)`)
+	require.Nil(t, err)
 
 	// Any SELECT should invoke BestIndex and fail due to IdxNum overflow.
 	_, err = db.Query(`SELECT val FROM ovt`)
-	if err == nil {
-		t.Fatalf("expected SELECT to fail due to IdxNum overflow")
-	}
-	if msg := err.Error(); !strings.Contains(msg, "IdxNum") || !strings.Contains(msg, "int32") {
-		t.Fatalf("unexpected error: %v", msg)
-	}
+	require.NotNil(t, err)
+
+	msg := err.Error()
+	require.False(t, !strings.Contains(msg, "IdxNum") || !strings.Contains(msg, "int32"))
+
 }
 
 func TestVtabColumnUnsupportedValueErrorMessage(t *testing.T) {
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if err := vtab.RegisterModule(db, "badcol", &badcolModule{}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE bc USING badcol(val)`); err != nil {
-		t.Fatalf("create vt: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(db, "badcol", &badcolModule{}))
+
+	_, err = db.Exec(`CREATE VIRTUAL TABLE bc USING badcol(val)`)
+	require.Nil(t, err)
 
 	// Run a query and ensure it fails with a descriptive message from xColumn.
 	rows, err := db.Query(`SELECT val FROM bc`)
 	if err != nil {
 		// Prepare-time error would also be acceptable, but we expect run-time here.
 		// Ensure message mentions unsupported driver.Value.
-		if !strings.Contains(err.Error(), "did not return a valid driver.Value") {
-			t.Fatalf("unexpected error from Query: %v", err)
-		}
+		require.Contains(t, err.Error(), "did not return a valid driver.Value")
+
 		return
 	}
 	defer rows.Close()
@@ -992,74 +929,63 @@ func (c *updaterCursorX) Close() error          { return nil }
 
 func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 	db, err := sql.Open(driverName, ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
 	mod := &updaterModuleX{}
-	if err := vtab.RegisterModule(db, "updemo", mod); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE ut USING updemo(name,email)`); err != nil {
-		t.Fatalf("create vt: %v", err)
-	}
+	require.NoError(t, vtab.RegisterModule(db, "updemo", mod))
+
+	_, err = db.Exec(`CREATE VIRTUAL TABLE ut USING updemo(name,email)`)
+	require.Nil(t, err)
 
 	// Insert Alice and Bob (auto rowid)
-	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Alice", "a1", "b1"); err != nil {
-		t.Fatalf("insert alice: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Bob", "a2", "b2"); err != nil {
-		t.Fatalf("insert bob: %v", err)
-	}
+	_, err = db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Alice", "a1", "b1")
+	require.Nil(t, err)
+
+	_, err = db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Bob", "a2", "b2")
+	require.Nil(t, err)
 
 	// Insert Carol (auto rowid)
-	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Carol", "a3", "b3"); err != nil {
-		t.Fatalf("insert carol: %v", err)
-	}
+	_, err = db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Carol", "a3", "b3")
+	require.Nil(t, err)
 
 	// Verify rows
 	assertRows := func(want []int64) {
 		rows, err := db.Query(`SELECT rowid FROM ut ORDER BY rowid`)
-		if err != nil {
-			t.Fatalf("select: %v", err)
-		}
+		require.Nil(t, err)
+
 		defer rows.Close()
 		got := make([]int64, 0)
 		for rows.Next() {
 			var id int64
-			if err := rows.Scan(&id); err != nil {
-				t.Fatalf("scan: %v", err)
-			}
+			require.NoError(t, rows.Scan(&id))
+
 			got = append(got, id)
 		}
-		if err := rows.Err(); err != nil {
-			t.Fatalf("rows.Err: %v", err)
-		}
-		if len(got) != len(want) {
-			t.Fatalf("got %d rows, want %d: %v", len(got), len(want), got)
-		}
+		require.NoError(t, rows.Err())
+
+		require.Equal(t, len(want), len(got))
+
 		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("ids mismatch got %v want %v", got, want)
-			}
+			require.Equal(t, want[i], got[i])
+
 		}
 	}
 
 	assertRows([]int64{1, 2, 3})
 
 	// Update Bob's email (rowid=2)
-	if _, err := db.Exec(`UPDATE ut SET val = ? WHERE rowid = ?`, "Bobby", 2); err != nil {
-		t.Fatalf("update: %v", err)
-	}
+	_, err = db.Exec(`UPDATE ut SET val = ? WHERE rowid = ?`, "Bobby", 2)
+	require.Nil(t, err)
+
 	// Rowids remain unchanged after value update
 	assertRows([]int64{1, 2, 3})
 
 	// Delete Bob (rowid=2)
-	if _, err := db.Exec(`DELETE FROM ut WHERE rowid = ?`, 2); err != nil {
-		t.Fatalf("delete: %v", err)
-	}
+	_, err = db.Exec(`DELETE FROM ut WHERE rowid = ?`, 2)
+	require.Nil(t, err)
 
 	assertRows([]int64{1, 3})
 
@@ -1067,33 +993,31 @@ func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 	assertVals := func(label string, rowid int64, wantVal, wantA, wantB string) {
 		t.Helper()
 		var val, a, b string
-		if err := db.QueryRow(`SELECT val, a, b FROM ut WHERE rowid = ?`, rowid).Scan(&val, &a, &b); err != nil {
-			t.Fatalf("%s: select rowid %d: %v", label, rowid, err)
-		}
-		if val != wantVal || a != wantA || b != wantB {
-			t.Fatalf("%s: got (%q, %q, %q), want (%q, %q, %q)", label, val, a, b, wantVal, wantA, wantB)
-		}
+		require.NoError(t, db.QueryRow(`SELECT val, a, b FROM ut WHERE rowid = ?`, rowid).Scan(&val, &a, &b))
+
+		require.False(t, val != wantVal || a != wantA || b != wantB)
+
 	}
 	assertVals("alice survived", 1, "Alice", "a1", "b1")
 	assertVals("carol survived", 3, "Carol", "a3", "b3")
 
 	// Insert with explicit rowid.
-	if _, err := db.Exec(`INSERT INTO ut(rowid, val, a, b) VALUES(42, 'Dan', 'a4', 'b4')`); err != nil {
-		t.Fatalf("insert explicit rowid: %v", err)
-	}
+	_, err = db.Exec(`INSERT INTO ut(rowid, val, a, b) VALUES(42, 'Dan', 'a4', 'b4')`)
+	require.Nil(t, err)
+
 	assertVals("explicit rowid", 42, "Dan", "a4", "b4")
 
 	// Update that changes the rowid.
-	if _, err := db.Exec(`UPDATE ut SET rowid = 7, val = 'Danny' WHERE rowid = 42`); err != nil {
-		t.Fatalf("update rowid: %v", err)
-	}
+	_, err = db.Exec(`UPDATE ut SET rowid = 7, val = 'Danny' WHERE rowid = 42`)
+	require.Nil(t, err)
+
 	assertVals("changed rowid", 7, "Danny", "a4", "b4")
 	assertRows([]int64{1, 3, 7})
 
 	// Update that changes only the rowid, no column values.
-	if _, err := db.Exec(`UPDATE ut SET rowid = 99 WHERE rowid = 7`); err != nil {
-		t.Fatalf("update rowid-only: %v", err)
-	}
+	_, err = db.Exec(`UPDATE ut SET rowid = 99 WHERE rowid = 7`)
+	require.Nil(t, err)
+
 	assertVals("rowid-only change", 99, "Danny", "a4", "b4")
 	assertRows([]int64{1, 3, 99})
 
@@ -1102,31 +1026,27 @@ func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 	tbl.txLog = nil // reset from earlier operations
 
 	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Eve', 'a5', 'b5')`); err != nil {
-		t.Fatalf("insert eve: %v", err)
-	}
-	if _, err := tx.Exec(`SAVEPOINT sp1`); err != nil {
-		t.Fatalf("savepoint: %v", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Frank', 'a6', 'b6')`); err != nil {
-		t.Fatalf("insert frank: %v", err)
-	}
-	if _, err := tx.Exec(`ROLLBACK TO sp1`); err != nil {
-		t.Fatalf("rollback to: %v", err)
-	}
-	if _, err := tx.Exec(`RELEASE sp1`); err != nil {
-		t.Fatalf("release: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit tx: %v", err)
-	}
+	require.Nil(t, err)
+
+	_, err = tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Eve', 'a5', 'b5')`)
+	require.Nil(t, err)
+
+	_, err = tx.Exec(`SAVEPOINT sp1`)
+	require.Nil(t, err)
+
+	_, err = tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Frank', 'a6', 'b6')`)
+	require.Nil(t, err)
+
+	_, err = tx.Exec(`ROLLBACK TO sp1`)
+	require.Nil(t, err)
+
+	_, err = tx.Exec(`RELEASE sp1`)
+	require.Nil(t, err)
+
+	require.NoError(t, tx.Commit())
 
 	for _, want := range []string{"begin", "savepoint", "rollbackto", "release"} {
-		if !slices.Contains(tbl.txLog, want) {
-			t.Errorf("%s callback was never called; txLog = %v", want, tbl.txLog)
-		}
+		assert.True(t, slices.Contains(tbl.txLog, want))
+
 	}
 }

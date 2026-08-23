@@ -10,10 +10,10 @@ import (
 	"sync"
 	"unsafe"
 
-	"modernc.org/libc"
-	"modernc.org/libc/sys/types"
 	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 	"github.com/wow-look-at-my/go-sqlite/vtab"
+	"modernc.org/libc"
+	"modernc.org/libc/sys/types"
 )
 
 func init() {

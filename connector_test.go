@@ -8,6 +8,8 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -40,24 +42,20 @@ func init() {
 // TestConnectorOpenDB exercises the sql.OpenDB path end to end.
 func TestConnectorOpenDB(t *testing.T) {
 	c, err := NewConnector("file::memory:")
-	if err != nil {
-		t.Fatalf("NewConnector: %v", err)
-	}
+	require.Nil(t, err)
 
 	db := sql.OpenDB(c)
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE t(i INT); INSERT INTO t VALUES(1), (2)`); err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	_, err = db.Exec(`CREATE TABLE t(i INT); INSERT INTO t VALUES(1), (2)`)
+	require.Nil(t, err)
 
 	var n int
-	if err := db.QueryRow(`SELECT sum(i) FROM t`).Scan(&n); err != nil {
-		t.Fatalf("QueryRow: %v", err)
-	}
-	if g, e := n, 3; g != e {
-		t.Fatalf("got %v, expected %v", g, e)
-	}
+	require.NoError(t, db.QueryRow(`SELECT sum(i) FROM t`).Scan(&n))
+
+	g, e := n, 3
+	require.Equal(t, e, g)
+
 }
 
 // TestConnectorAppliesGlobalRegistrations is the point of
@@ -68,32 +66,25 @@ func TestConnectorAppliesGlobalRegistrations(t *testing.T) {
 	before := atomic.LoadInt64(&connHookCalls)
 
 	c, err := NewConnector("file::memory:?_pragma=application_id(1)&x=" + connHookMarker)
-	if err != nil {
-		t.Fatalf("NewConnector: %v", err)
-	}
+	require.Nil(t, err)
 
 	db := sql.OpenDB(c)
 	defer db.Close()
 
 	var n int
-	if err := db.QueryRow(`SELECT connector_test_answer()`).Scan(&n); err != nil {
-		t.Fatalf("registered function not available: %v", err)
-	}
-	if g, e := n, 42; g != e {
-		t.Fatalf("got %v, expected %v", g, e)
-	}
+	require.NoError(t, db.QueryRow(`SELECT connector_test_answer()`).Scan(&n))
+
+	g, e := n, 42
+	require.Equal(t, e, g)
 
 	var b bool
-	if err := db.QueryRow(`SELECT 'a' < 'b' COLLATE connector_test_collation`).Scan(&b); err != nil {
-		t.Fatalf("registered collation not available: %v", err)
-	}
-	if !b {
-		t.Fatal("collation returned an unexpected ordering")
-	}
+	require.NoError(t, db.QueryRow(`SELECT 'a' < 'b' COLLATE connector_test_collation`).Scan(&b))
 
-	if g := atomic.LoadInt64(&connHookCalls); g <= before {
-		t.Fatalf("connection hook not called: %v, was %v", g, before)
-	}
+	require.True(t, b)
+
+	g := atomic.LoadInt64(&connHookCalls)
+	require.Greater(t, g, before)
+
 }
 
 // TestConnectorDriverIsRegisteredDriver checks that the Connector reports the
@@ -101,25 +92,22 @@ func TestConnectorAppliesGlobalRegistrations(t *testing.T) {
 // is what makes it a drop-in for code reaching the driver through db.Driver().
 func TestConnectorDriverIsRegisteredDriver(t *testing.T) {
 	viaOpen, err := sql.Open("sqlite", "file::memory:")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer viaOpen.Close()
 
 	c, err := NewConnector("file::memory:")
-	if err != nil {
-		t.Fatalf("NewConnector: %v", err)
-	}
+	require.Nil(t, err)
 
 	viaConnector := sql.OpenDB(c)
 	defer viaConnector.Close()
 
-	if g, e := viaConnector.Driver(), viaOpen.Driver(); g != e {
-		t.Fatalf("got %p, expected %p", g, e)
-	}
-	if _, ok := viaConnector.Driver().(*Driver); !ok {
-		t.Fatalf("got %T, expected *sqlite.Driver", viaConnector.Driver())
-	}
+	g, e := viaConnector.Driver(), viaOpen.Driver()
+	require.Equal(t, e, g)
+
+	_, ok := viaConnector.Driver().(*Driver)
+	require.True(t, ok)
+
 }
 
 // countingConnector is the wrapper an instrumentation library writes. Note
@@ -139,45 +127,38 @@ func (c *countingConnector) Connect(ctx context.Context) (driver.Conn, error) {
 // interposing on the physical connections database/sql opens.
 func TestConnectorWrapping(t *testing.T) {
 	base, err := NewConnector("file:" + filepath.Join(t.TempDir(), "wrap.db"))
-	if err != nil {
-		t.Fatalf("NewConnector: %v", err)
-	}
+	require.Nil(t, err)
 
 	wrapped := &countingConnector{Connector: base}
 	db := sql.OpenDB(wrapped)
 	defer db.Close()
 	db.SetMaxOpenConns(2)
 
-	if g := atomic.LoadInt64(&wrapped.connects); g != 0 {
-		t.Fatalf("sql.OpenDB connected eagerly: %v", g)
-	}
+	g := atomic.LoadInt64(&wrapped.connects)
+	require.Equal(t, int64(0), g)
 
 	// Holding two sql.Conn at once forces exactly two physical connections.
 	ctx := context.Background()
 	c1, err := db.Conn(ctx)
-	if err != nil {
-		t.Fatalf("Conn: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer c1.Close()
 
 	c2, err := db.Conn(ctx)
-	if err != nil {
-		t.Fatalf("Conn: %v", err)
-	}
+	require.Nil(t, err)
+
 	defer c2.Close()
 
-	if g, e := atomic.LoadInt64(&wrapped.connects), int64(2); g != e {
-		t.Fatalf("got %v physical connects, expected %v", g, e)
-	}
+	g, e := atomic.LoadInt64(&wrapped.connects), int64(2)
+	require.Equal(t, e, g)
 
 	// The wrapper must not have cost us the global registrations.
 	var n int
-	if err := c1.QueryRowContext(ctx, `SELECT connector_test_answer()`).Scan(&n); err != nil {
-		t.Fatalf("registered function not available through wrapper: %v", err)
-	}
-	if g, e := n, 42; g != e {
-		t.Fatalf("got %v, expected %v", g, e)
-	}
+	require.NoError(t, c1.QueryRowContext(ctx, `SELECT connector_test_answer()`).Scan(&n))
+
+	g, e := n, 42
+	require.Equal(t, e, g)
+
 }
 
 // TestConnectorRejectsMalformedQuery covers the eager half of the validation
@@ -192,13 +173,10 @@ func TestConnectorRejectsMalformedQuery(t *testing.T) {
 		"file::memory:?vfs=a&vfs=b",
 	} {
 		c, err := NewConnector(dsn)
-		if err == nil {
-			t.Errorf("%q: got a Connector, expected an error", dsn)
-			continue
-		}
-		if c != nil {
-			t.Errorf("%q: got a non-nil Connector alongside %v", dsn, err)
-		}
+		assert.NotNil(t, err)
+
+		assert.Nil(t, c)
+
 	}
 }
 
@@ -208,9 +186,7 @@ func TestConnectorDefersValueValidation(t *testing.T) {
 	const dsn = "file::memory:?_txlock=bogus"
 
 	c, err := NewConnector(dsn)
-	if err != nil {
-		t.Fatalf("NewConnector rejected %q eagerly: %v", dsn, err)
-	}
+	require.Nil(t, err)
 
 	db := sql.OpenDB(c)
 	defer db.Close()
@@ -226,21 +202,17 @@ func TestConnectorDefersValueValidation(t *testing.T) {
 // context rather than opening a connection.
 func TestConnectorContextCanceled(t *testing.T) {
 	c, err := NewConnector("file::memory:")
-	if err != nil {
-		t.Fatalf("NewConnector: %v", err)
-	}
+	require.Nil(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	conn, err := c.Connect(ctx)
-	if err == nil {
-		conn.Close()
-		t.Fatal("Connect succeeded on a cancelled context")
-	}
-	if g, e := err, context.Canceled; g != e {
-		t.Fatalf("got %v, expected %v", g, e)
-	}
+	require.NotNil(conn, err)
+
+	g, e := err, context.Canceled
+	require.Equal(t, e, g)
+
 }
 
 // TestConnectorDSNSplitMatchesOpen guards the invariant dsnQuery's comment
@@ -259,9 +231,9 @@ func TestConnectorDSNSplitMatchesOpen(t *testing.T) {
 		{"?a=b", ""}, // A '?' in the first position is part of the filename.
 		{"x?a=b?c=d", "a=b?c=d"},
 	} {
-		if g, e := dsnQuery(v.dsn), v.query; g != e {
-			t.Errorf("dsnQuery(%q): got %q, expected %q", v.dsn, g, e)
-		}
+		g, e := dsnQuery(v.dsn), v.query
+		assert.Equal(t, e, g)
+
 	}
 
 	// Whatever NewConnector rejects, opening must reject too. Every dsn here
@@ -280,9 +252,7 @@ func TestConnectorDSNSplitMatchesOpen(t *testing.T) {
 		}
 
 		conn, oErr := d.Open(dsn)
-		if oErr == nil {
-			conn.Close()
-			t.Errorf("%q: NewConnector rejected it (%v) but Open accepted it", dsn, cErr)
-		}
+		assert.NotNil(conn, oErr)
+
 	}
 }
