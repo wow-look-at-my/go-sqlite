@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"modernc.org/sqlite"
+	"github.com/wow-look-at-my/go-sqlite"
 )
 
 func E(err error) string {
