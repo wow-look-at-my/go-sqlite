@@ -1,0 +1,300 @@
+// Copyright 2026 The Sqlite Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package pcache_test
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/wow-look-at-my/go-sqlite"
+	"github.com/wow-look-at-my/go-sqlite/pcache"
+)
+
+// BenchmarkPoolBoundedCache exercises the workload from the SQLite
+// issue #204 conversation: a small bounded cache (cache_size in pages)
+// driven by a write/read mix that exceeds it many times over. The
+// reportable numbers are
+//
+//   - allocs/op + bytes/op from the Go-side runtime, which are the
+//     wrapper's footprint per insert,
+//   - HeapInuse before/after, which captures whether the wrapper or
+//     the Pool itself accumulates Go-heap garbage proportional to the
+//     workload size,
+//   - easy-refusals/op, the number of FetchCreateEasy refusals at cap
+//     per insert. SQLite handles a refusal by spilling dirty pages and
+//     retrying with FetchCreateForce, so this is a direct proxy for the
+//     I/O pressure the strict Easy contract adds vs pcache1's
+//     recycle-without-spill behavior (raised by cznic in the !127
+//     review),
+//   - the Pool.Stats counters at the end, which show that the bounded
+//     cache stayed bounded (Allocs and Evictions are within an order
+//     of magnitude of each other, never one growing without the other).
+//
+// To produce a side-by-side memory comparison vs the default pcache1,
+// run the same benchmark in a sibling working tree that does not
+// import this package; the parent binary then falls back to the
+// in-engine pcache1. The MR description carries the comparison
+// numbers; this benchmark is the reproducer.
+func BenchmarkPoolBoundedCache(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "bench.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA cache_size=16`); err != nil {
+		b.Fatalf("cache_size: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		b.Fatalf("journal_mode: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (k INTEGER PRIMARY KEY, v BLOB)`); err != nil {
+		b.Fatalf("CREATE TABLE: %v", err)
+	}
+
+	blob := make([]byte, 256)
+	stmt, err := db.Prepare(`INSERT INTO t(v) VALUES (?)`)
+	if err != nil {
+		b.Fatalf("Prepare: %v", err)
+	}
+	defer stmt.Close()
+
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+	baseline := poolUnderTest.Stats()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		blob[0] = byte(i)
+		if _, err := stmt.Exec(blob); err != nil {
+			b.Fatalf("INSERT[%d]: %v", i, err)
+		}
+	}
+	b.StopTimer()
+
+	runtime.GC()
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	delta := statsDelta(baseline, poolUnderTest.Stats())
+
+	b.ReportMetric(float64(delta.Allocs)/float64(b.N), "page-allocs/op")
+	b.ReportMetric(float64(delta.Evictions)/float64(b.N), "page-evictions/op")
+	b.ReportMetric(float64(delta.EasyRefusals)/float64(b.N), "easy-refusals/op")
+	b.ReportMetric(float64(memAfter.HeapInuse-memBefore.HeapInuse), "go-heap-inuse-delta-bytes")
+	b.Logf("pool delta over %d inserts: %+v", b.N, delta)
+}
+
+// BenchmarkPoolEvictionChurn drives a rotating-residue
+// delete + vacuum + matching-batch insert cycle against a small
+// bounded cache so the LRU has to evict many times the cache_size
+// over the run. Cycle i deletes rows where k % 3 == i % 3, then
+// re-inserts a small batch of rows whose keys map back to that
+// residue so the next visit (three cycles later) finds rows to
+// scan. Without the rotation + re-insert the workload converges to
+// a no-op after the seed's k % 3 = 0 partition is drained, and
+// easy-refusals/op collapses to a fixed first-cycle cost divided
+// by b.N. The reportable evictions/op and easy-refusals/op are the
+// steady-state churn the binding handles per SQL statement under
+// cache pressure. The rotating-residue + matching-batch INSERT
+// pattern also reliably triggers the b-tree rebalance paths that
+// emit xRekey through the SQL surface (~13 Rekeys per cycle,
+// scaling linearly with b.N); the benchmark therefore complements
+// the dedicated xRekey unit tests (TestRekey, TestRekeyEvictsCollider)
+// rather than deferring to them.
+func BenchmarkPoolEvictionChurn(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "churn.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA cache_size=16; PRAGMA auto_vacuum=incremental`); err != nil {
+		b.Fatalf("pragmas: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE r (k INTEGER PRIMARY KEY, v BLOB)`); err != nil {
+		b.Fatalf("CREATE TABLE: %v", err)
+	}
+
+	const batchPerCycle = 200 // rows re-inserted into the just-cleared residue each cycle
+
+	// Seed three batches of batchPerCycle rows, one per residue class
+	// (k % 3 in {0, 1, 2}), so the first three cycles of the
+	// rotating-residue DELETE each remove a same-size partition. From
+	// cycle 0 forward, every cycle removes batchPerCycle rows and
+	// re-inserts batchPerCycle rows, keeping per-cycle work constant
+	// and the reported per-op metrics independent of b.N. Without
+	// the constant per-cycle work, the seed's k % 3 = 0 partition
+	// would drain on cycle 0 and easy-refusals/op would collapse to
+	// a fixed first-cycle cost divided by b.N.
+	blob := make([]byte, 256)
+	var seedKey int64
+	for residue := int64(0); residue < 3; residue++ {
+		for j := 0; j < batchPerCycle; j++ {
+			seedKey++
+			for seedKey%3 != residue {
+				seedKey++
+			}
+			if _, err := db.Exec(`INSERT INTO r(k, v) VALUES (?, ?)`, seedKey, blob); err != nil {
+				b.Fatalf("seed[%d,%d]: %v", residue, j, err)
+			}
+		}
+	}
+
+	baseline := poolUnderTest.Stats()
+	nextKey := seedKey + 1
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		residue := int64(i % 3)
+		if _, err := db.Exec(`DELETE FROM r WHERE k % 3 = ?`, residue); err != nil {
+			b.Fatalf("DELETE[%d]: %v", i, err)
+		}
+		if _, err := db.Exec(`PRAGMA incremental_vacuum`); err != nil {
+			b.Fatalf("vacuum[%d]: %v", i, err)
+		}
+		// Re-insert batchPerCycle rows whose keys land in the
+		// just-cleared residue, in a fresh disjoint range. The next
+		// time this residue rotates around (three cycles later) the
+		// DELETE finds these rows and the spill pressure recurs,
+		// keeping EasyRefusals scaling with b.N rather than capping
+		// at the seed's one-time first-cycle cost.
+		for j := 0; j < batchPerCycle; j++ {
+			for nextKey%3 != residue {
+				nextKey++
+			}
+			if _, err := db.Exec(`INSERT INTO r(k, v) VALUES (?, ?)`, nextKey, blob); err != nil {
+				b.Fatalf("INSERT[%d,%d]: %v", i, j, err)
+			}
+			nextKey += 3
+		}
+	}
+	b.StopTimer()
+	delta := statsDelta(baseline, poolUnderTest.Stats())
+	b.ReportMetric(float64(delta.Allocs)/float64(b.N), "page-allocs/op")
+	b.ReportMetric(float64(delta.Evictions)/float64(b.N), "page-evictions/op")
+	b.ReportMetric(float64(delta.EasyRefusals)/float64(b.N), "easy-refusals/op")
+	b.ReportMetric(float64(delta.Truncates)/float64(b.N), "truncates/op")
+	b.Logf("eviction-churn delta over %d cycles: %+v", b.N, delta)
+}
+
+// dbStatus reads one per-connection counter through the parent package's
+// [sqlite.DBStatus] escape hatch. The benchmark uses it to read the real
+// pager-level CACHE_SPILL / CACHE_WRITE counters instead of the in-package
+// EasyRefusals proxy.
+func dbStatus(b *testing.B, conn *sql.Conn, op sqlite.DBStatusOp) int {
+	b.Helper()
+	var cur int
+	if err := conn.Raw(func(dc any) error {
+		s, ok := dc.(sqlite.DBStatus)
+		if !ok {
+			b.Fatalf("driver conn does not implement sqlite.DBStatus")
+		}
+		c, _, err := s.Status(op, false)
+		cur = c
+		return err
+	}); err != nil {
+		b.Fatalf("db_status(%d): %v", op, err)
+	}
+	return cur
+}
+
+// BenchmarkPoolSpillIO measures the pool's real I/O pressure under the
+// rotating-residue eviction-churn workload by reading SQLite's pager-level
+// counters (SQLITE_DBSTATUS_CACHE_SPILL, _CACHE_WRITE, _CACHE_HIT,
+// _CACHE_MISS) through the parent package's sqlite.DBStatus API, rather than
+// the in-package EasyRefusals proxy that BenchmarkPoolEvictionChurn reports.
+//
+// cache-spill/op and cache-write/op are the numbers that actually answer the
+// "does the strict Easy contract cost extra I/O vs pcache1" question cznic
+// raised on the !127 review: they are maintained identically by the pager for
+// pcache1 and the pool, so they are a genuine apples-to-apples measure.
+//
+// To produce the pcache1 baseline, run this same workload in a sibling
+// working tree whose test binary does not import this package, so the parent
+// driver falls back to the in-engine pcache1; registration is process-global
+// and one-shot, so the two caches cannot be compared in a single process. The
+// MR description carries the side-by-side numbers; this benchmark is the
+// reproducer for the pool side.
+//
+// The workload runs on a single pinned *sql.Conn so PRAGMA cache_size and the
+// per-connection db_status counters refer to the same connection.
+func BenchmarkPoolSpillIO(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "spillio.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		b.Fatalf("Conn: %v", err)
+	}
+	defer conn.Close()
+
+	exec := func(q string, args ...any) {
+		if _, err := conn.ExecContext(context.Background(), q, args...); err != nil {
+			b.Fatalf("exec %q: %v", q, err)
+		}
+	}
+	exec(`PRAGMA cache_size=16`)
+	exec(`PRAGMA auto_vacuum=incremental`)
+	exec(`CREATE TABLE r (k INTEGER PRIMARY KEY, v BLOB)`)
+
+	const batchPerCycle = 200
+
+	blob := make([]byte, 256)
+	var seedKey int64
+	for residue := int64(0); residue < 3; residue++ {
+		for j := 0; j < batchPerCycle; j++ {
+			seedKey++
+			for seedKey%3 != residue {
+				seedKey++
+			}
+			exec(`INSERT INTO r(k, v) VALUES (?, ?)`, seedKey, blob)
+		}
+	}
+
+	spill0 := dbStatus(b, conn, sqlite.DBStatusCacheSpill)
+	write0 := dbStatus(b, conn, sqlite.DBStatusCacheWrite)
+	hit0 := dbStatus(b, conn, sqlite.DBStatusCacheHit)
+	miss0 := dbStatus(b, conn, sqlite.DBStatusCacheMiss)
+
+	nextKey := seedKey + 1
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		residue := int64(i % 3)
+		exec(`DELETE FROM r WHERE k % 3 = ?`, residue)
+		exec(`PRAGMA incremental_vacuum`)
+		for j := 0; j < batchPerCycle; j++ {
+			for nextKey%3 != residue {
+				nextKey++
+			}
+			exec(`INSERT INTO r(k, v) VALUES (?, ?)`, nextKey, blob)
+			nextKey += 3
+		}
+	}
+	b.StopTimer()
+
+	spill := dbStatus(b, conn, sqlite.DBStatusCacheSpill) - spill0
+	write := dbStatus(b, conn, sqlite.DBStatusCacheWrite) - write0
+	hit := dbStatus(b, conn, sqlite.DBStatusCacheHit) - hit0
+	miss := dbStatus(b, conn, sqlite.DBStatusCacheMiss) - miss0
+	b.ReportMetric(float64(spill)/float64(b.N), "cache-spill/op")
+	b.ReportMetric(float64(write)/float64(b.N), "cache-write/op")
+	b.ReportMetric(float64(hit)/float64(b.N), "cache-hit/op")
+	b.ReportMetric(float64(miss)/float64(b.N), "cache-miss/op")
+	b.Logf("pager-counter deltas over %d cycles: spill=%d write=%d hit=%d miss=%d",
+		b.N, spill, write, hit, miss)
+}
+
+// statsDelta is defined in e2e_test.go; same package.
+
+var _ = pcache.Stats{}

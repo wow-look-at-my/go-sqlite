@@ -4,10 +4,11 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 
-	"modernc.org/sqlite/vtab"
+	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
 // dummyModule is a minimal vtab.Module implementation used to verify that the
@@ -346,7 +347,7 @@ func (c *matchCursorX) Close() error {
 }
 
 // TestDummyModuleVtab verifies that a simple vtab module implemented in Go
-// can be registered and queried through the modernc.org/sqlite driver.
+// can be registered and queried through the github.com/wow-look-at-my/go-sqlite driver.
 func TestDummyModuleVtab(t *testing.T) {
 	// Open an in-memory database using this driver.
 	db, err := sql.Open(driverName, ":memory:")
@@ -875,16 +876,20 @@ func TestVtabColumnUnsupportedValueErrorMessage(t *testing.T) {
 	}
 }
 
-// Updater demo: in-memory table with (name, email) columns and rowid.
+// Updater demo: in-memory table with (val, a, b) columns and rowid.
 type updRow struct {
-	id  int64
-	val string
+	id   int64
+	val  string
+	a, b string
 }
 
-type updaterModuleX struct{}
+type updaterModuleX struct {
+	lastTable *updaterTableX
+}
 type updaterTableX struct {
 	rows   []updRow
 	nextID int64
+	txLog  []string
 }
 type updaterCursorX struct {
 	t   *updaterTableX
@@ -895,10 +900,12 @@ func (m *updaterModuleX) Create(ctx vtab.Context, args []string) (vtab.Table, er
 	if len(args) < 3 {
 		return nil, fmt.Errorf("upd: missing table name")
 	}
-	if err := ctx.Declare(fmt.Sprintf("CREATE TABLE %s(val)", args[2])); err != nil {
+	if err := ctx.Declare(fmt.Sprintf("CREATE TABLE %s(val, a, b)", args[2])); err != nil {
 		return nil, err
 	}
-	return &updaterTableX{rows: nil, nextID: 1}, nil
+	tbl := &updaterTableX{rows: nil, nextID: 1}
+	m.lastTable = tbl
+	return tbl, nil
 }
 func (m *updaterModuleX) Connect(ctx vtab.Context, args []string) (vtab.Table, error) {
 	return m.Create(ctx, args)
@@ -910,21 +917,24 @@ func (t *updaterTableX) Destroy() error                       { return nil }
 
 // Updater methods
 func (t *updaterTableX) Insert(cols []vtab.Value, rowid *int64) error {
-	val, _ := cols[0].(string)
+	val := cols[0].(string)
+	a := cols[1].(string)
+	b := cols[2].(string)
 	id := *rowid
 	if id == 0 {
 		id = t.nextID
 	}
 	t.nextID = id + 1
-	t.rows = append(t.rows, updRow{id: id, val: val})
+	t.rows = append(t.rows, updRow{id: id, val: val, a: a, b: b})
 	*rowid = id
 	return nil
 }
 func (t *updaterTableX) Update(oldRowid int64, cols []vtab.Value, newRowid *int64) error {
 	for i := range t.rows {
 		if t.rows[i].id == oldRowid {
-			val, _ := cols[0].(string)
-			t.rows[i].val = val
+			t.rows[i].val = cols[0].(string)
+			t.rows[i].a = cols[1].(string)
+			t.rows[i].b = cols[2].(string)
 			if newRowid != nil && *newRowid != 0 && *newRowid != oldRowid {
 				t.rows[i].id = *newRowid
 			}
@@ -943,6 +953,15 @@ func (t *updaterTableX) Delete(oldRowid int64) error {
 	return fmt.Errorf("row %d not found", oldRowid)
 }
 
+// Transactional methods — record calls so tests can verify dispatch.
+func (t *updaterTableX) Begin() error         { t.txLog = append(t.txLog, "begin"); return nil }
+func (t *updaterTableX) Sync() error          { t.txLog = append(t.txLog, "sync"); return nil }
+func (t *updaterTableX) Commit() error        { t.txLog = append(t.txLog, "commit"); return nil }
+func (t *updaterTableX) Rollback() error      { t.txLog = append(t.txLog, "rollback"); return nil }
+func (t *updaterTableX) Savepoint(int) error  { t.txLog = append(t.txLog, "savepoint"); return nil }
+func (t *updaterTableX) Release(int) error    { t.txLog = append(t.txLog, "release"); return nil }
+func (t *updaterTableX) RollbackTo(int) error { t.txLog = append(t.txLog, "rollbackto"); return nil }
+
 func (c *updaterCursorX) Filter(idxNum int, idxStr string, vals []vtab.Value) error {
 	c.pos = 0
 	return nil
@@ -958,8 +977,13 @@ func (c *updaterCursorX) Column(col int) (vtab.Value, error) {
 	if c.pos >= len(c.t.rows) {
 		return nil, nil
 	}
-	if col == 0 {
+	switch col {
+	case 0:
 		return c.t.rows[c.pos].val, nil
+	case 1:
+		return c.t.rows[c.pos].a, nil
+	case 2:
+		return c.t.rows[c.pos].b, nil
 	}
 	return nil, nil
 }
@@ -972,8 +996,10 @@ func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
 
-	if err := vtab.RegisterModule(db, "updemo", &updaterModuleX{}); err != nil {
+	mod := &updaterModuleX{}
+	if err := vtab.RegisterModule(db, "updemo", mod); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := db.Exec(`CREATE VIRTUAL TABLE ut USING updemo(name,email)`); err != nil {
@@ -981,15 +1007,15 @@ func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 	}
 
 	// Insert Alice and Bob (auto rowid)
-	if _, err := db.Exec(`INSERT INTO ut(val) VALUES(?)`, "Alice"); err != nil {
+	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Alice", "a1", "b1"); err != nil {
 		t.Fatalf("insert alice: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO ut(val) VALUES(?)`, "Bob"); err != nil {
+	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Bob", "a2", "b2"); err != nil {
 		t.Fatalf("insert bob: %v", err)
 	}
 
 	// Insert Carol (auto rowid)
-	if _, err := db.Exec(`INSERT INTO ut(val) VALUES(?)`, "Carol"); err != nil {
+	if _, err := db.Exec(`INSERT INTO ut(val, a, b) VALUES(?, ?, ?)`, "Carol", "a3", "b3"); err != nil {
 		t.Fatalf("insert carol: %v", err)
 	}
 
@@ -1036,4 +1062,71 @@ func TestVtabUpdaterInsertUpdateDelete(t *testing.T) {
 	}
 
 	assertRows([]int64{1, 3})
+
+	// Verify column values survived insert, update, and delete.
+	assertVals := func(label string, rowid int64, wantVal, wantA, wantB string) {
+		t.Helper()
+		var val, a, b string
+		if err := db.QueryRow(`SELECT val, a, b FROM ut WHERE rowid = ?`, rowid).Scan(&val, &a, &b); err != nil {
+			t.Fatalf("%s: select rowid %d: %v", label, rowid, err)
+		}
+		if val != wantVal || a != wantA || b != wantB {
+			t.Fatalf("%s: got (%q, %q, %q), want (%q, %q, %q)", label, val, a, b, wantVal, wantA, wantB)
+		}
+	}
+	assertVals("alice survived", 1, "Alice", "a1", "b1")
+	assertVals("carol survived", 3, "Carol", "a3", "b3")
+
+	// Insert with explicit rowid.
+	if _, err := db.Exec(`INSERT INTO ut(rowid, val, a, b) VALUES(42, 'Dan', 'a4', 'b4')`); err != nil {
+		t.Fatalf("insert explicit rowid: %v", err)
+	}
+	assertVals("explicit rowid", 42, "Dan", "a4", "b4")
+
+	// Update that changes the rowid.
+	if _, err := db.Exec(`UPDATE ut SET rowid = 7, val = 'Danny' WHERE rowid = 42`); err != nil {
+		t.Fatalf("update rowid: %v", err)
+	}
+	assertVals("changed rowid", 7, "Danny", "a4", "b4")
+	assertRows([]int64{1, 3, 7})
+
+	// Update that changes only the rowid, no column values.
+	if _, err := db.Exec(`UPDATE ut SET rowid = 99 WHERE rowid = 7`); err != nil {
+		t.Fatalf("update rowid-only: %v", err)
+	}
+	assertVals("rowid-only change", 99, "Danny", "a4", "b4")
+	assertRows([]int64{1, 3, 99})
+
+	// Verify that savepoint-level Transactional callbacks are dispatched.
+	tbl := mod.lastTable
+	tbl.txLog = nil // reset from earlier operations
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Eve', 'a5', 'b5')`); err != nil {
+		t.Fatalf("insert eve: %v", err)
+	}
+	if _, err := tx.Exec(`SAVEPOINT sp1`); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO ut(val, a, b) VALUES('Frank', 'a6', 'b6')`); err != nil {
+		t.Fatalf("insert frank: %v", err)
+	}
+	if _, err := tx.Exec(`ROLLBACK TO sp1`); err != nil {
+		t.Fatalf("rollback to: %v", err)
+	}
+	if _, err := tx.Exec(`RELEASE sp1`); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	for _, want := range []string{"begin", "savepoint", "rollbackto", "release"} {
+		if !slices.Contains(tbl.txLog, want) {
+			t.Errorf("%s callback was never called; txLog = %v", want, tbl.txLog)
+		}
+	}
 }
