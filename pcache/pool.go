@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package pcache provides a bounded, LRU-evicting page cache suitable
-// for registration with [github.com/wow-look-at-my/go-sqlite] via
+// for registration with [modernc.org/sqlite] via
 // [sqlite.RegisterPageCache]. It is the reference implementation that
 // accompanies the SQLITE_CONFIG_PCACHE2 wrapper defined in the parent
 // package.
@@ -20,8 +20,8 @@
 // Typical use:
 //
 //	import (
-//	    "github.com/wow-look-at-my/go-sqlite"
-//	    "github.com/wow-look-at-my/go-sqlite/pcache"
+//	    "modernc.org/sqlite"
+//	    "modernc.org/sqlite/pcache"
 //	)
 //
 //	func init() {
@@ -45,7 +45,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/wow-look-at-my/go-sqlite"
+	"modernc.org/sqlite"
 	"modernc.org/libc"
 	"modernc.org/libc/sys/types"
 )

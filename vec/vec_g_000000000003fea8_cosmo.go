@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	libsqlite3 "modernc.org/sqlite/lib"
 )
 
 func Xarray_append(tls *libc.TLS, array uintptr, element uintptr) (r int32) {

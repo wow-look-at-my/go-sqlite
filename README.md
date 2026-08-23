@@ -1,13 +1,13 @@
-Fork of [github.com/wow-look-at-my/go-sqlite](https://pkg.go.dev/github.com/wow-look-at-my/go-sqlite) — a CGo-free, pure Go SQLite driver.
+Fork of [modernc.org/sqlite](https://pkg.go.dev/modernc.org/sqlite) — a CGo-free, pure Go SQLite driver.
 
-Import path: `github.com/wow-look-at-my/go-sqlite`
+Import path: `modernc.org/sqlite`
 
 ---
 
 Virtual Tables (vtab)
 ---------------------
 
-The driver exposes a Go API to implement SQLite virtual table modules in pure Go via the `github.com/wow-look-at-my/go-sqlite/vtab` package. This lets you back SQL tables with arbitrary data sources (e.g., vector indexes, CSV files, remote APIs) and integrate with SQLite’s planner.
+The driver exposes a Go API to implement SQLite virtual table modules in pure Go via the `modernc.org/sqlite/vtab` package. This lets you back SQL tables with arbitrary data sources (e.g., vector indexes, CSV files, remote APIs) and integrate with SQLite’s planner.
 
 - Register: `vtab.RegisterModule(db, name, module)`. Registration applies to new connections only.
 - Schema declaration: Call `ctx.Declare("CREATE TABLE <name>(<cols...>)")` within `Create` or `Connect`. The driver does not auto-declare schemas, enabling dynamic schemas.

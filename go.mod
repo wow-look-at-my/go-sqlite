@@ -1,4 +1,4 @@
-module github.com/wow-look-at-my/go-sqlite
+module modernc.org/sqlite
 
 go 1.25.0
 

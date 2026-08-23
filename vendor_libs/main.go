@@ -350,7 +350,7 @@ type Sqlite3_vtab_cursor = sqlite3_vtab_cursor
 			s = strings.Replace(s, "package libsqlite_vec", "package vec", 1)
 			fmt.Fprintln(b, s)
 			s = ast.SourceFile.ImportDeclList.Source(true)
-			s = strings.Replace(s, `"modernc.org/libsqlite3"`, `libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"`, 1)
+			s = strings.Replace(s, `"modernc.org/libsqlite3"`, `libsqlite3 "modernc.org/sqlite/lib"`, 1)
 			fmt.Fprint(b, s)
 			taken := map[string]struct{}{}
 			for n := ast.SourceFile.TopLevelDeclList; n != nil; n = n.List {

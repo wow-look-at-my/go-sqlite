@@ -6,7 +6,7 @@ package vec
 
 import (
 	"modernc.org/libc"
-	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	libsqlite3 "modernc.org/sqlite/lib"
 )
 
 func _fvec_from_value(tls *libc.TLS, value uintptr, vector uintptr, dimensions uintptr, __ccgo_fp_cleanup uintptr, pzErr uintptr) (r int32) {

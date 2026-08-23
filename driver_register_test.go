@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/wow-look-at-my/go-sqlite/vtab"
+	"modernc.org/sqlite/vtab"
 )
 
 // reachModule reports that it was reached by failing Create/Connect with a

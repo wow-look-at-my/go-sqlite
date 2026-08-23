@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	_ "github.com/wow-look-at-my/go-sqlite"
-	"github.com/wow-look-at-my/go-sqlite/vtab"
+	_ "modernc.org/sqlite"
+	"modernc.org/sqlite/vtab"
 )
 
 // matchModule demonstrates MATCH pushdown. It exposes a single TEXT column `val`.

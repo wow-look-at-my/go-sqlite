@@ -39,7 +39,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	sqlite3 "modernc.org/sqlite/lib"
 	"modernc.org/libc"
 )
 

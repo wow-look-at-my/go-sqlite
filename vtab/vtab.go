@@ -173,7 +173,7 @@ type Updater interface {
 // is sticky for the lifetime of that registration; it covers every Filter,
 // Insert, and Update call routed to tables created from this module.
 //
-// The safety contract mirrors github.com/wow-look-at-my/go-sqlite.FunctionImpl.VolatileArgs:
+// The safety contract mirrors modernc.org/sqlite.FunctionImpl.VolatileArgs:
 //
 //   - The string and []byte values inside the vals / cols slice are valid
 //     only for the duration of the call. They must not be retained past the

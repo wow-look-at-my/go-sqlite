@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/wow-look-at-my/go-sqlite/vtab"
+	"modernc.org/sqlite/vtab"
 )
 
 // dummyModule is a minimal vtab.Module implementation used to verify that the
@@ -349,7 +349,7 @@ func (c *matchCursorX) Close() error {
 }
 
 // TestDummyModuleVtab verifies that a simple vtab module implemented in Go
-// can be registered and queried through the github.com/wow-look-at-my/go-sqlite driver.
+// can be registered and queried through the modernc.org/sqlite driver.
 func TestDummyModuleVtab(t *testing.T) {
 	// Open an in-memory database using this driver.
 	db, err := sql.Open(driverName, ":memory:")

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	_ "github.com/wow-look-at-my/go-sqlite/vec"
+	_ "modernc.org/sqlite/vec"
 )
 
 func TestVec(t *testing.T) {
