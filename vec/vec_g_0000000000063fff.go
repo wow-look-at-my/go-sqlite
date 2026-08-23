@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	libsqlite3 "modernc.org/sqlite/lib"
 )
 
 func Xsqlite3_vec_numpy_init(tls *libc.TLS, db uintptr, pzErrMsg uintptr, pApi uintptr) (r int32) {

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"unsafe"
 
+	sqlite3 "modernc.org/sqlite/lib"
 	"modernc.org/libc"
 	"modernc.org/libc/sys/types"
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 // The pcache binding owns the sqlite3_pcache_page stub that SQLite sees

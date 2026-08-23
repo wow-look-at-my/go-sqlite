@@ -64,7 +64,7 @@ editor:
 		-hide=vfsOpen \
 		-hide=vfsRead \
 		-ignore-link-errors \
-		-import github.com/wow-look-at-my/go-sqlite/lib \
+		-import modernc.org/sqlite/lib \
 		--package-name vfs \
 		--prefix-external X
 	sed -i 's/\<sqlite3_snprintf\>/sqlite3.Xsqlite3_snprintf/' $(FN)

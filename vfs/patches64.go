@@ -10,8 +10,8 @@ package vfs
 import (
 	"unsafe"
 
+	sqlite3 "modernc.org/sqlite/lib"
 	"modernc.org/libc"
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
 )
 
 func init() {

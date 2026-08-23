@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wow-look-at-my/go-sqlite/vtab"
+	"modernc.org/sqlite/vtab"
 )
 
 // volNoopModule is a minimal vtab module used by the VolatileArgs vtab
@@ -240,7 +240,7 @@ func (c *volStoredCursor) Close() error { return nil }
 
 // volBenchModules registers the package-global vtab modules used by the
 // VolatileArgs benchmarks. Module registration is process-global (one entry
-// per name in github.com/wow-look-at-my/go-sqlite), so a benchmark loop that warms up and
+// per name in modernc.org/sqlite), so a benchmark loop that warms up and
 // re-enters its setup must not register repeatedly.
 func init() {
 	for _, m := range []struct {

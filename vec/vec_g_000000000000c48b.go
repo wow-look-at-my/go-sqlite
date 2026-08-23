@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	libsqlite3 "modernc.org/sqlite/lib"
 )
 
 func Xnpy_token_next(tls *libc.TLS, start uintptr, end uintptr, out uintptr) (r int32) {

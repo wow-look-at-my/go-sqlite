@@ -7,9 +7,9 @@ import (
 	"log"
 	"regexp"
 
-	_ "github.com/wow-look-at-my/go-sqlite"
-	sqlite "github.com/wow-look-at-my/go-sqlite"
-	"github.com/wow-look-at-my/go-sqlite/vtab"
+	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
+	"modernc.org/sqlite/vtab"
 )
 
 // Register a minimal REGEXP(pattern, value) UDF so SQLite can evaluate

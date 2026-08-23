@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package sqlite // import "github.com/wow-look-at-my/go-sqlite"
+package sqlite // import "modernc.org/sqlite"
 
 import (
 	"fmt"
@@ -10,10 +10,10 @@ import (
 	"sync"
 	"unsafe"
 
+	sqlite3 "modernc.org/sqlite/lib"
+	"modernc.org/sqlite/vtab"
 	"modernc.org/libc"
 	"modernc.org/libc/sys/types"
-	sqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
-	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
 func init() {
@@ -123,7 +123,7 @@ func registerModule(name string, m vtab.Module) error {
 
 // RegisterModule registers a virtual table module on d alone, so it reaches
 // only the connections d opens. It is the per-driver counterpart of
-// [github.com/wow-look-at-my/go-sqlite/vtab.RegisterModule], which reaches it by way of the
+// [modernc.org/sqlite/vtab.RegisterModule], which reaches it by way of the
 // *sql.DB passed as that function's first argument.
 //
 // Connections d opens also receive every module registered through the
@@ -137,7 +137,7 @@ func registerModule(name string, m vtab.Module) error {
 // that cannot collide, or register through the package-level path instead.
 //
 // Registration applies to new connections only; see
-// [github.com/wow-look-at-my/go-sqlite/vtab.RegisterModule] for the full contract.
+// [modernc.org/sqlite/vtab.RegisterModule] for the full contract.
 func (d *Driver) RegisterModule(name string, m vtab.Module) (err error) {
 	if dmesgs {
 		defer func() {

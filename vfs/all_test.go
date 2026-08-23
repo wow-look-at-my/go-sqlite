@@ -13,7 +13,7 @@ import (
 	"testing"
 	"testing/iotest"
 
-	"github.com/wow-look-at-my/go-sqlite"
+	"modernc.org/sqlite"
 )
 
 func E(err error) string {

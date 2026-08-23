@@ -8,7 +8,7 @@ import (
 	"unsafe"
 
 	"modernc.org/libc"
-	libsqlite3 "github.com/wow-look-at-my/go-sqlite/lib"
+	libsqlite3 "modernc.org/sqlite/lib"
 )
 
 type Tblkcnt_t = int64

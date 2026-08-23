@@ -270,7 +270,7 @@ func TestPCacheIDGen(t *testing.T) {
 
 // An end-to-end test that actually opens a sqlite database and routes
 // it through a custom PageCache cannot live in this package: the
-// github.com/wow-look-at-my/go-sqlite/vec package's init() calls
+// modernc.org/sqlite/vec package's init() calls
 // Xsqlite3_auto_extension, which itself calls Xsqlite3_initialize
 // (lib/sqlite_darwin_arm64.go: Xsqlite3_auto_extension), and vec is
 // loaded by vec_test.go in this same test binary. By the time any test

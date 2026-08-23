@@ -7,6 +7,8 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"strings"
 	"testing"
@@ -21,14 +23,12 @@ import (
 // detector under -race.
 func TestColumnTextScan(t *testing.T) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)`); err != nil {
-		t.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)`)
+	require.Nil(t, err)
 
 	long := strings.Repeat("a1B2c3D4", 256) // 2048 bytes, well past inline storage
 	cases := []struct {
@@ -41,50 +41,42 @@ func TestColumnTextScan(t *testing.T) {
 		{4, long},
 	}
 	for _, c := range cases {
-		if _, err := db.Exec(`INSERT INTO t(id, s) VALUES (?, ?)`, c.id, c.s); err != nil {
-			t.Fatalf("insert id=%d: %v", c.id, err)
-		}
+		_, err = db.Exec(`INSERT INTO t(id, s) VALUES (?, ?)`, c.id, c.s)
+		require.Nil(t, err)
+
 	}
 
 	for _, c := range cases {
 		var got string
-		if err := db.QueryRow(`SELECT s FROM t WHERE id = ?`, c.id).Scan(&got); err != nil {
-			t.Fatalf("scan id=%d: %v", c.id, err)
-		}
-		if got != c.s {
-			t.Errorf("id=%d: got %q (len %d), want %q (len %d)", c.id, got, len(got), c.s, len(c.s))
-		}
+		require.NoError(t, db.QueryRow(`SELECT s FROM t WHERE id = ?`, c.id).Scan(&got))
+
+		assert.Equal(t, c.s, got)
+
 	}
 
 	// Read all rows in a single query so columnText is invoked many times in
 	// quick succession; a stale-pointer regression would surface here as the
 	// last row's text bleeding into earlier rows.
 	rows, err := db.Query(`SELECT s FROM t ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	var got []string
 	for rows.Next() {
 		var s string
-		if err := rows.Scan(&s); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, rows.Scan(&s))
+
 		got = append(got, s)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rows.Err())
 
 	want := []string{"hello", "", "unicode é 中文 \U0001F600", long}
-	if len(got) != len(want) {
-		t.Fatalf("row count: got %d, want %d", len(got), len(want))
-	}
+	require.Equal(t, len(want), len(got))
+
 	for i := range got {
-		if got[i] != want[i] {
-			t.Errorf("row %d: got %q (len %d), want %q (len %d)", i, got[i], len(got[i]), want[i], len(want[i]))
-		}
+		assert.Equal(t, want[i], got[i])
+
 	}
 }
 
@@ -96,51 +88,42 @@ func TestColumnTextScan(t *testing.T) {
 // large sizes the memcpy dominates.
 func benchColumnTextScan(b *testing.B, textLen int) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE t (s TEXT)`); err != nil {
-		b.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (s TEXT)`)
+	require.Nil(b, err)
 
 	payload := strings.Repeat("X", textLen)
 	const rows = 1000
 	tx, err := db.Begin()
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	stmt, err := tx.Prepare(`INSERT INTO t (s) VALUES (?)`)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	for i := 0; i < rows; i++ {
-		if _, err := stmt.Exec(payload); err != nil {
-			b.Fatal(err)
-		}
+		_, err = stmt.Exec(payload)
+		require.Nil(b, err)
+
 	}
 	stmt.Close()
-	if err := tx.Commit(); err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, tx.Commit())
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := db.Query(`SELECT s FROM t`)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.Nil(b, err)
+
 		for r.Next() {
 			var s string
-			if err := r.Scan(&s); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, r.Scan(&s))
+
 		}
-		if err := r.Err(); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, r.Err())
+
 		r.Close()
 	}
 }
@@ -172,42 +155,37 @@ func BenchmarkColumnTextScanLong(b *testing.B) {
 // type-name mismatch between the two readers.
 func TestColumnTypeDatabaseTypeNameCache(t *testing.T) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
 	// Mix declared types in different cases and across all SQLite storage
 	// classes. The varied casing exercises the strings.ToUpper path of the
 	// cache.
-	if _, err := db.Exec(`CREATE TABLE t (a integer, b TEXT, c BlOb, d DATETIME, e Date, f boolean)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO t VALUES (1, 'x', X'00', '2025-01-15 10:30:00', '2025-01-15', 1)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO t VALUES (2, 'y', X'01', '2025-01-16 11:00:00', '2025-01-16', 0)`); err != nil {
-		t.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (a integer, b TEXT, c BlOb, d DATETIME, e Date, f boolean)`)
+	require.Nil(t, err)
+
+	_, err = db.Exec(`INSERT INTO t VALUES (1, 'x', X'00', '2025-01-15 10:30:00', '2025-01-15', 1)`)
+	require.Nil(t, err)
+
+	_, err = db.Exec(`INSERT INTO t VALUES (2, 'y', X'01', '2025-01-16 11:00:00', '2025-01-16', 0)`)
+	require.Nil(t, err)
 
 	rows, err := db.Query(`SELECT a, b, c, d, e, f FROM t`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	types, err := rows.ColumnTypes()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	wantTypes := []string{"INTEGER", "TEXT", "BLOB", "DATETIME", "DATE", "BOOLEAN"}
-	if len(types) != len(wantTypes) {
-		t.Fatalf("column count: got %d, want %d", len(types), len(wantTypes))
-	}
+	require.Equal(t, len(wantTypes), len(types))
+
 	for i, ct := range types {
-		if got := ct.DatabaseTypeName(); got != wantTypes[i] {
-			t.Errorf("column %d: got %q, want %q", i, got, wantTypes[i])
-		}
+		got := ct.DatabaseTypeName()
+		assert.Equal(t, wantTypes[i], got)
+
 	}
 
 	// Drain rows; reading the cache for every row of a multi-row scan must
@@ -216,17 +194,15 @@ func TestColumnTypeDatabaseTypeNameCache(t *testing.T) {
 	for rows.Next() {
 		rowCount++
 		for i, ct := range types {
-			if got := ct.DatabaseTypeName(); got != wantTypes[i] {
-				t.Errorf("row %d column %d: got %q, want %q (cache changed mid-scan)", rowCount, i, got, wantTypes[i])
-			}
+			got := ct.DatabaseTypeName()
+			assert.Equal(t, wantTypes[i], got)
+
 		}
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if rowCount != 2 {
-		t.Errorf("row count: got %d, want 2", rowCount)
-	}
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, 2, rowCount)
+
 }
 
 // benchTextToTimeScan exercises the rows.Next + Scan path under
@@ -236,9 +212,8 @@ func TestColumnTypeDatabaseTypeNameCache(t *testing.T) {
 // per row per column. With the cache the lookup is a single slice index.
 func benchTextToTimeScan(b *testing.B, columnCount int) {
 	db, err := sql.Open(driverName, "file::memory:?_texttotime=1")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer db.Close()
 
 	var schemaCols, selectCols, insertCols, insertVals []string
@@ -248,32 +223,27 @@ func benchTextToTimeScan(b *testing.B, columnCount int) {
 		insertCols = append(insertCols, fmt.Sprintf("c%d", i))
 		insertVals = append(insertVals, "?")
 	}
-	if _, err := db.Exec(`CREATE TABLE t (` + strings.Join(schemaCols, ", ") + `)`); err != nil {
-		b.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (` + strings.Join(schemaCols, ", ") + `)`)
+	require.Nil(b, err)
 
 	const rows = 1000
 	tx, err := db.Begin()
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	stmt, err := tx.Prepare(`INSERT INTO t (` + strings.Join(insertCols, ", ") + `) VALUES (` + strings.Join(insertVals, ", ") + `)`)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	args := make([]any, columnCount)
 	for i := 0; i < columnCount; i++ {
 		args[i] = "2025-01-15 10:30:00"
 	}
 	for i := 0; i < rows; i++ {
-		if _, err := stmt.Exec(args...); err != nil {
-			b.Fatal(err)
-		}
+		_, err = stmt.Exec(args)
+		require.Nil(b, err)
+
 	}
 	stmt.Close()
-	if err := tx.Commit(); err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, tx.Commit())
 
 	query := `SELECT ` + strings.Join(selectCols, ", ") + ` FROM t`
 	dest := make([]any, columnCount)
@@ -286,17 +256,14 @@ func benchTextToTimeScan(b *testing.B, columnCount int) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := db.Query(query)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.Nil(b, err)
+
 		for r.Next() {
-			if err := r.Scan(destPtrs...); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, r.Scan(destPtrs))
+
 		}
-		if err := r.Err(); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, r.Err())
+
 		r.Close()
 	}
 }
@@ -363,36 +330,30 @@ func TestColumnTypeScanTypeDecltypeCache(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.label, func(t *testing.T) {
 			db, err := sql.Open(driverName, c.dsn)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.Nil(t, err)
+
 			defer db.Close()
 
-			if _, err := db.Exec(`CREATE TABLE t (` + c.col + `)`); err != nil {
-				t.Fatalf("create table: %v", err)
-			}
-			if _, err := db.Exec(`INSERT INTO t VALUES (?)`, c.value); err != nil {
-				t.Fatalf("insert: %v", err)
-			}
+			_, err = db.Exec(`CREATE TABLE t (` + c.col + `)`)
+			require.Nil(t, err)
+
+			_, err = db.Exec(`INSERT INTO t VALUES (?)`, c.value)
+			require.Nil(t, err)
+
 			rows, err := db.Query(`SELECT * FROM t`)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.Nil(t, err)
+
 			defer rows.Close()
-			if !rows.Next() {
-				t.Fatal("expected one row")
-			}
+			require.True(t, rows.Next())
 
 			types, err := rows.ColumnTypes()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(types) != 1 {
-				t.Fatalf("column count: got %d, want 1", len(types))
-			}
-			if got := types[0].ScanType(); got != c.want {
-				t.Errorf("ScanType: got %v, want %v", got, c.want)
-			}
+			require.Nil(t, err)
+
+			require.Equal(t, 1, len(types))
+
+			got := types[0].ScanType()
+			assert.Equal(t, c.want, got)
+
 		})
 	}
 }
@@ -403,14 +364,12 @@ func TestColumnTypeScanTypeDecltypeCache(t *testing.T) {
 // switches mid-result-set still parses correctly via the fallthrough path.
 func TestParseTimeFormatCache(t *testing.T) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, dt DATETIME)`); err != nil {
-		t.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, dt DATETIME)`)
+	require.Nil(t, err)
 
 	// First three rows use the same canonical SQLite TEXT format (matches
 	// format index 2 of parseTimeFormats: "2006-01-02 15:04:05.999999999").
@@ -425,15 +384,14 @@ func TestParseTimeFormatCache(t *testing.T) {
 		"2025-01-17",
 	}
 	for i, v := range values {
-		if _, err := db.Exec(`INSERT INTO t(id, dt) VALUES (?, ?)`, i+1, v); err != nil {
-			t.Fatalf("insert id=%d: %v", i+1, err)
-		}
+		_, err = db.Exec(`INSERT INTO t(id, dt) VALUES (?, ?)`, i+1, v)
+		require.Nil(t, err)
+
 	}
 
 	rows, err := db.Query(`SELECT dt FROM t ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+
 	defer rows.Close()
 
 	wantTimes := []time.Time{
@@ -445,24 +403,19 @@ func TestParseTimeFormatCache(t *testing.T) {
 	}
 	i := 0
 	for rows.Next() {
-		if i >= len(wantTimes) {
-			t.Fatalf("too many rows; want %d", len(wantTimes))
-		}
+		require.Less(t, i, len(wantTimes))
+
 		var got time.Time
-		if err := rows.Scan(&got); err != nil {
-			t.Fatalf("row %d scan: %v", i, err)
-		}
-		if !got.Equal(wantTimes[i]) {
-			t.Errorf("row %d: got %v, want %v", i, got, wantTimes[i])
-		}
+		require.NoError(t, rows.Scan(&got))
+
+		assert.True(t, got.Equal(wantTimes[i]))
+
 		i++
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if i != len(wantTimes) {
-		t.Fatalf("row count: got %d, want %d", i, len(wantTimes))
-	}
+	require.NoError(t, rows.Err())
+
+	require.Equal(t, len(wantTimes), i)
+
 }
 
 // benchParseTimeScan exercises the rows.Next + Scan path on a DATETIME TEXT
@@ -471,52 +424,43 @@ func TestParseTimeFormatCache(t *testing.T) {
 // the parseTimeFormats list until it finds a match.
 func benchParseTimeScan(b *testing.B) {
 	db, err := sql.Open(driverName, "file::memory:")
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE t (dt DATETIME)`); err != nil {
-		b.Fatal(err)
-	}
+	_, err = db.Exec(`CREATE TABLE t (dt DATETIME)`)
+	require.Nil(b, err)
 
 	const rows = 1000
 	tx, err := db.Begin()
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	stmt, err := tx.Prepare(`INSERT INTO t (dt) VALUES (?)`)
-	if err != nil {
-		b.Fatal(err)
-	}
+	require.Nil(b, err)
+
 	for i := 0; i < rows; i++ {
 		// Canonical SQLite TEXT datetime format (index 2 of
 		// parseTimeFormats).
-		if _, err := stmt.Exec("2025-01-15 10:30:00"); err != nil {
-			b.Fatal(err)
-		}
+		_, err = stmt.Exec("2025-01-15 10:30:00")
+		require.Nil(b, err)
+
 	}
 	stmt.Close()
-	if err := tx.Commit(); err != nil {
-		b.Fatal(err)
-	}
+	require.NoError(b, tx.Commit())
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r, err := db.Query(`SELECT dt FROM t`)
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.Nil(b, err)
+
 		var got time.Time
 		for r.Next() {
-			if err := r.Scan(&got); err != nil {
-				b.Fatal(err)
-			}
+			require.NoError(b, r.Scan(&got))
+
 		}
-		if err := r.Err(); err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, r.Err())
+
 		r.Close()
 	}
 }

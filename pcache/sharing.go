@@ -22,7 +22,7 @@ package pcache
 // our pcache callbacks may be invoked from different goroutines in
 // quick succession. They do not actually overlap: SQLite serialises
 // every callback through sqlite3BtreeEnter on the BtShared mutex
-// (SQLITE_THREADSAFE=1, the default for github.com/wow-look-at-my/go-sqlite). The
+// (SQLITE_THREADSAFE=1, the default for modernc.org/sqlite). The
 // pcache pool is therefore correct under cache=shared by virtue of
 // SQLite's own serialisation; verified empirically with a lock-free
 // in-flight probe (max-in-flight = 1 on the canonical two-connection
