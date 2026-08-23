@@ -13,8 +13,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	_ "modernc.org/sqlite"
-	"modernc.org/sqlite/vtab"
+	_ "github.com/wow-look-at-my/go-sqlite"
+	"github.com/wow-look-at-my/go-sqlite/vtab"
 )
 
 // A tiny CSV loader example that:

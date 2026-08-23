@@ -5,7 +5,7 @@
 //go:build sqlite.dmesg
 // +build sqlite.dmesg
 
-package sqlite // import "modernc.org/sqlite"
+package sqlite // import "github.com/wow-look-at-my/go-sqlite"
 
 import (
 	"fmt"
